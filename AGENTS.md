@@ -1,0 +1,86 @@
+# Ask the Company
+
+Minimal, framework-free RAG demo over synthetic Northwind Retail Co. documents (HR, IT, product FAQ, support runbook). Goal is to understand every pipeline stage, not wrap a library.
+
+All code lives in `rag-demo/`. Run commands from that directory.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `python3.12 -m venv .venv` | Create venv. Use 3.12, not 3.14 — `faiss-cpu` / `sentence-transformers` wheels lag on brand-new Python. |
+| `./.venv/bin/pip install -r requirements.txt` | Install deps |
+| `./.venv/bin/python build_index.py` | Chunk `docs/`, embed, persist FAISS index. Run once, and again whenever `docs/` changes. |
+| `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs `ANTHROPIC_API_KEY`) |
+| `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
+| `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
+| `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
+
+There is no lint, format, test-runner, or deploy command.
+
+## Tech stack
+
+- Python 3.12, stdlib-style scripts (no FastAPI/Flask, no LangChain/LlamaIndex)
+- `sentence-transformers` — `all-MiniLM-L6-v2` bi-encoder; `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker
+- `faiss-cpu` — `IndexFlatIP` on L2-normalized vectors (cosine via inner product)
+- `anthropic` — generation with `claude-sonnet-4-5`
+- `numpy` — embedding arrays as `float32`
+
+## Architecture
+
+```
+docs/*.md
+   │  chunk.py          heading-aware chunking + overlap
+   ▼
+build_index.py          embed → FAISS + pickle metadata
+   ▼
+index/                  chunks.faiss, metadata.pkl, config.json
+   │
+retrieve.py             top-20 vector search → cross-encoder rerank → top-4
+   ▼
+generate.py             grounded prompt + citations → Claude
+   ▼
+cli.py                  argv question → printed answer + sources
+eval.py                 recall@k, vector-only vs reranked
+```
+
+Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddings → FAISS → `RetrievedChunk` → numbered excerpts in the LLM prompt.
+
+## Key files
+
+- `rag-demo/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`
+- `rag-demo/build_index.py` — writes `index/chunks.faiss`, `index/metadata.pkl`, `index/config.json`
+- `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals
+- `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”; `max_tokens=500`
+- `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
+- `rag-demo/docs/` — 11 synthetic `.md` files; company name is Northwind Retail Co.
+
+## Environment
+
+- `ANTHROPIC_API_KEY` — required for `cli.py` / `generate.py` only. Retrieval and eval run fully offline after models are cached.
+- First retrieve/eval/index build downloads Hugging Face models; subsequent runs use the local cache.
+- `index/` and `.venv/` are gitignored. A committed tree has no index; rebuild locally.
+
+## Coding conventions
+
+- Flat modules, not a package. Imports are `from chunk import …` / `from retrieve import …`. Run from `rag-demo/` (or put it on `PYTHONPATH`).
+- Each file is both an importable module and a `__main__` CLI.
+- Resolve paths from `Path(__file__).parent`, never from cwd.
+- Dataclasses + modern type hints (`list[Chunk]`, `float | None`). No Pydantic.
+- Module constants for tunables (`CHUNK_SIZE`, `EMBEDDING_MODEL`, `MODEL`).
+- Module-level docstring explains *why* (what the naive alternative gets wrong), not just what the file does.
+- Keep it framework-free. Do not add LangChain, an API server, or extra deps unless the task needs them.
+- Synthetic docs: `# Title` then `##` sections. Chunking only splits on `## ` headings.
+
+## Testing
+
+- No unit tests. Accuracy is `eval.py` recall@k (did the expected `source_file` appear in the top-k chunks).
+- On this corpus (~52 chunks, 11 topically separated docs) vector search and rerank both report ~95% @1 and 100% @3/@5, but they fail *different* queries. Treat eval-set changes as the source of truth, not a single example query.
+- `eval.py` does not call the LLM.
+
+## Gotchas
+
+- Rebuild the index after any `docs/` edit; retrieval reads whatever is on disk.
+- Do not treat rerank as strictly better here. README documents a laptop-return query that vector search gets right and the reranker flips to `it_security_policy.md`.
+- Generation must not use outside knowledge; if chunks are empty or insufficient, say so.
+- Production follow-ups (hybrid BM25, query rewrite, metadata filters, RAGAS, citation verification) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked.
