@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ask Northwind</title>
+  <style>
+    :root {
+      --bg: #141311;
+      --paper: #1e1c18;
+      --ink: #f3efe6;
+      --muted: #9c9588;
+      --line: #3d382f;
+      --brass: #c9a36a;
+      --brass-dim: #8a7048;
+      --ok: #8fbfa8;
+      --err: #d27a6a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1200px 500px at 10% -10%, #2a2418 0%, transparent 50%),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1 {
+      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      font-weight: 600;
+      font-size: 2rem;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.35rem;
+    }
+    .lede {
+      color: var(--muted);
+      margin: 0 0 1.75rem;
+      max-width: 40em;
+    }
+    form {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+    input[type="text"] {
+      flex: 1;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      padding: 0.7rem 0.85rem;
+      font: inherit;
+      border-radius: 4px;
+    }
+    input[type="text"]:focus {
+      outline: 2px solid var(--brass);
+      outline-offset: 1px;
+    }
+    button {
+      font: inherit;
+      background: var(--brass);
+      color: #1a140c;
+      border: 0;
+      padding: 0.7rem 1.1rem;
+      border-radius: 4px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.ghost {
+      background: transparent;
+      color: var(--brass);
+      border: 1px solid var(--brass-dim);
+      padding: 0.2rem 0.6rem;
+      font-weight: 500;
+      font-size: 0.85rem;
+    }
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+    }
+    .panel h2 {
+      margin: 0 0 0.7rem;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    #status {
+      color: var(--ok);
+      min-height: 1.3em;
+      margin: 0 0 0.75rem;
+    }
+    #status.idle { color: var(--muted); }
+    #status.err { color: var(--err); }
+    #chunks {
+      display: grid;
+      gap: 0.65rem;
+    }
+    .chunk {
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 0.65rem 0.75rem;
+    }
+    .chunk .meta {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
+      color: var(--brass);
+      margin-bottom: 0.3rem;
+    }
+    .chunk .preview {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    #answer {
+      white-space: pre-wrap;
+      min-height: 4rem;
+      margin: 0;
+      font-size: 1.02rem;
+    }
+    footer {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+    #conn::before {
+      content: "";
+      display: inline-block;
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: var(--muted);
+      margin-right: 0.4rem;
+    }
+    #conn.connected::before { background: var(--ok); }
+    #conn.disconnected::before, #conn.error::before { background: var(--err); }
+    #reconnect { display: none; }
+    #reconnect.show { display: inline-block; }
+    @media (min-width: 640px) {
+      #chunks { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Ask Northwind</h1>
+    <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes.</p>
+
+    <form id="ask-form">
+      <input id="question" type="text" autocomplete="off"
+             placeholder="How many PTO days do I get per year?" />
+      <button type="submit" id="ask">Ask</button>
+    </form>
+
+    <section class="panel" aria-live="polite">
+      <h2>Pipeline</h2>
+      <p id="status" class="idle">Ready</p>
+      <div id="chunks"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Answer</h2>
+      <p id="answer"></p>
+    </section>
+
+    <footer>
+      <span id="conn">disconnected</span>
+      <button type="button" class="ghost" id="reconnect">Reconnect</button>
+    </footer>
+  </main>
+  <script>
+    const form = document.getElementById("ask-form");
+    const input = document.getElementById("question");
+    const askBtn = document.getElementById("ask");
+    const statusEl = document.getElementById("status");
+    const chunksEl = document.getElementById("chunks");
+    const answerEl = document.getElementById("answer");
+    const connEl = document.getElementById("conn");
+    const reconnectBtn = document.getElementById("reconnect");
+
+    let ws = null;
+    let answering = false;
+
+    const STAGE = {
+      retrieving: "Searching documents…",
+      generating: "Writing answer…",
+    };
+
+    function setConn(state) {
+      connEl.className = state;
+      connEl.textContent = state;
+      reconnectBtn.classList.toggle("show", state !== "connected");
+    }
+
+    function setBusy(busy) {
+      answering = busy;
+      input.disabled = busy;
+      askBtn.disabled = busy;
+    }
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = kind || "";
+    }
+
+    function connect() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onopen = () => setConn("connected");
+      ws.onerror = () => setConn("error");
+      ws.onclose = () => {
+        setConn("disconnected");
+        setBusy(false);
+        setStatus("Ready", "idle");
+      };
+      ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+    }
+
+    function handle(event) {
+      if (event.type === "status") {
+        setStatus(STAGE[event.stage] || event.stage);
+        return;
+      }
+      if (event.type === "sources") {
+        chunksEl.replaceChildren();
+        if (!event.chunks.length) {
+          const empty = document.createElement("p");
+          empty.className = "preview";
+          empty.textContent = "No matching excerpts.";
+          chunksEl.appendChild(empty);
+          return;
+        }
+        for (const chunk of event.chunks) {
+          const card = document.createElement("article");
+          card.className = "chunk";
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = `[${chunk.n}] ${chunk.source_file}`;
+          const preview = document.createElement("div");
+          preview.className = "preview";
+          preview.textContent = chunk.preview;
+          card.append(meta, preview);
+          chunksEl.appendChild(card);
+        }
+        return;
+      }
+      if (event.type === "token") {
+        answerEl.textContent += event.text;
+        return;
+      }
+      if (event.type === "done") {
+        setBusy(false);
+        setStatus("Ready", "idle");
+        input.focus();
+        return;
+      }
+      if (event.type === "error") {
+        setBusy(false);
+        setStatus(event.message, "err");
+        input.focus();
+      }
+    }
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const question = input.value.trim();
+      if (!question || answering) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setStatus("Not connected. Use Reconnect.", "err");
+        return;
+      }
+      chunksEl.replaceChildren();
+      answerEl.textContent = "";
+      setStatus("Sending…");
+      setBusy(true);
+      ws.send(JSON.stringify({ question }));
+    });
+
+    reconnectBtn.addEventListener("click", connect);
+    connect();
+    input.focus();
+  </script>
+</body>
+</html>

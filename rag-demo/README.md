@@ -37,6 +37,10 @@ python3.12 -m venv .venv        # 3.12, not 3.14 — wheel availability for
 
 export ANTHROPIC_API_KEY=sk-ant-...
 ./.venv/bin/python cli.py "How many PTO days do I get per year?"
+
+# Browser UI (same pipeline, streamed over a WebSocket)
+./.venv/bin/python server.py
+# open http://127.0.0.1:8000
 ```
 
 ## Retrieval accuracy: what's actually implemented
@@ -151,6 +155,18 @@ being able to discuss:
 | `chunk.py` | Heading-aware chunking with overlap |
 | `build_index.py` | Embed chunks, build/persist the FAISS index |
 | `retrieve.py` | Vector search + cross-encoder rerank |
-| `generate.py` | Prompt assembly + Claude call, with citations |
+| `generate.py` | Prompt assembly + Claude call, with citations (`answer_stream` for the UI) |
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k evaluation harness |
+| `server.py` | FastAPI WebSocket shell; no extra RAG logic |
+| `static/index.html` | Single-page UI: pipeline + streamed answer |
+
+## Web UI
+
+`server.py` serves `static/index.html` at `/` and a WebSocket at `/ws`. The page sends `{ "question": "..." }` and renders events in order: retrieving → source excerpts → tokens → done. The RAG path is still retrieve-then-rerank-then-Claude; the socket is only transport.
+
+```bash
+./.venv/bin/python server.py
+```
+
+Then open `http://127.0.0.1:8000`. Rebuild the index the same way as for the CLI whenever `docs/` changes. `cli.py` is unchanged.

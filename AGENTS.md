@@ -12,6 +12,7 @@ All code lives in `rag-demo/`. Run commands from that directory.
 | `./.venv/bin/pip install -r requirements.txt` | Install deps |
 | `./.venv/bin/python build_index.py` | Chunk `docs/`, embed, persist FAISS index. Run once, and again whenever `docs/` changes. |
 | `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs `ANTHROPIC_API_KEY`) |
+| `./.venv/bin/python server.py` | Browser UI at http://127.0.0.1:8000 (WebSocket stream; needs `ANTHROPIC_API_KEY`) |
 | `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
 | `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
 | `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
