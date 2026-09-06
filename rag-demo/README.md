@@ -19,7 +19,9 @@ index/                  — persisted vectors + metadata
    ▼
 retrieve.py             — vector search (top-20) → cross-encoder rerank (top-4)
    ▼
-generate.py             — grounded prompt + citations → Claude
+generate.py             — grounded prompt + citations
+   │
+llm.py                  — Anthropic or OpenAI-compatible (Ollama, etc.)
    ▼
 cli.py                  — "python cli.py '<question>'"
 ```
@@ -35,13 +37,43 @@ python3.12 -m venv .venv        # 3.12, not 3.14 — wheel availability for
 
 ./.venv/bin/python build_index.py     # run once, and again whenever docs/ changes
 
-export ANTHROPIC_API_KEY=sk-ant-...
+# Generation: copy .env.example → .env and uncomment ONE provider block
+cp .env.example .env
+# then edit .env (see “LLM providers” below)
+
 ./.venv/bin/python cli.py "How many PTO days do I get per year?"
 
 # Browser UI (same pipeline, streamed over a WebSocket)
 ./.venv/bin/python server.py
 # open http://127.0.0.1:8000
 ```
+
+## LLM providers
+
+Retrieval (Nomic + FAISS + rerank) always runs on your machine. Only the
+final write-the-answer step calls an LLM. `llm.py` supports two HTTP
+shapes: Anthropic Messages, and OpenAI Chat Completions (used by Ollama,
+LM Studio, vLLM, Groq, OpenRouter, xAI, OpenAI itself).
+
+| `LLM_PROVIDER` | Driver | Default model | Key | Default base URL |
+|----------------|--------|---------------|-----|------------------|
+| `anthropic` (or unset + `ANTHROPIC_API_KEY`) | Anthropic | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | SDK default |
+| `openai` | Chat Completions | `gpt-4o-mini` | `OPENAI_API_KEY` or `LLM_API_KEY` | `https://api.openai.com/v1` |
+| `ollama` | Chat Completions | `llama3.2` | optional (`ollama` dummy) | `http://127.0.0.1:11434/v1` |
+| `xai` | Chat Completions | `grok-4.5` | `XAI_API_KEY` or `LLM_API_KEY` | `https://api.x.ai/v1` |
+
+Copy `.env.example` to `.env` and uncomment one block. `.env` is gitignored;
+`llm.py` loads it automatically (exported shell variables still win).
+
+Override model with `LLM_MODEL` and endpoint with `LLM_BASE_URL`. Check
+what `llm.py` resolved:
+
+```bash
+./.venv/bin/python llm.py
+```
+
+A small local model may ignore citation rules more often than Claude.
+That is a model limit; the prompt is the same.
 
 ## Retrieval accuracy: what's actually implemented
 
@@ -155,7 +187,8 @@ being able to discuss:
 | `chunk.py` | Heading-aware chunking with overlap |
 | `build_index.py` | Embed chunks, build/persist the FAISS index |
 | `retrieve.py` | Vector search + cross-encoder rerank |
-| `generate.py` | Prompt assembly + Claude call, with citations (`answer_stream` for the UI) |
+| `generate.py` | Prompt assembly + citations (`answer_stream` for the UI) |
+| `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k evaluation harness |
 | `server.py` | FastAPI WebSocket shell; no extra RAG logic |

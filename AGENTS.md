@@ -11,8 +11,8 @@ All code lives in `rag-demo/`. Run commands from that directory.
 | `python3.12 -m venv .venv` | Create venv. Use 3.12, not 3.14 — `faiss-cpu` / `sentence-transformers` wheels lag on brand-new Python. |
 | `./.venv/bin/pip install -r requirements.txt` | Install deps |
 | `./.venv/bin/python build_index.py` | Chunk `docs/`, embed, persist FAISS index. Run once, and again whenever `docs/` changes. |
-| `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs `ANTHROPIC_API_KEY`) |
-| `./.venv/bin/python server.py` | Browser UI at http://127.0.0.1:8000 (WebSocket stream; needs `ANTHROPIC_API_KEY`) |
+| `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs an LLM provider; see Environment) |
+| `./.venv/bin/python server.py` | Browser UI at http://127.0.0.1:8000 (WebSocket stream; same LLM env as CLI) |
 | `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
 | `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
 | `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
@@ -24,7 +24,7 @@ There is no lint, format, test-runner, or deploy command.
 - Python 3.12, stdlib-style scripts (no FastAPI/Flask, no LangChain/LlamaIndex)
 - `sentence-transformers` — `nomic-ai/nomic-embed-text-v1.5` bi-encoder (`search_document:` / `search_query:` prefixes); `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker
 - `faiss-cpu` — `IndexFlatIP` on L2-normalized vectors (cosine via inner product)
-- `anthropic` — generation with `claude-sonnet-4-5`
+- `anthropic` / `openai` — generation via `llm.py` (Anthropic Messages or OpenAI-compatible Chat Completions, including Ollama)
 - `numpy` — embedding arrays as `float32`
 
 ## Architecture
@@ -39,7 +39,9 @@ index/                  chunks.faiss, metadata.pkl, config.json
    │
 retrieve.py             top-20 vector search → cross-encoder rerank → top-4
    ▼
-generate.py             grounded prompt + citations → Claude
+generate.py             grounded prompt + citations
+   ▼
+llm.py                  Anthropic or OpenAI-compatible LLM
    ▼
 cli.py                  argv question → printed answer + sources
 eval.py                 recall@k, vector-only vs reranked
@@ -52,13 +54,14 @@ Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddi
 - `rag-demo/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`
 - `rag-demo/build_index.py` — writes `index/chunks.faiss`, `index/metadata.pkl`, `index/config.json`
 - `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals
-- `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”; `max_tokens=500`
+- `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
+- `rag-demo/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
 - `rag-demo/docs/` — 11 synthetic `.md` files; company name is Northwind Retail Co.
 
 ## Environment
 
-- `ANTHROPIC_API_KEY` — required for `cli.py` / `generate.py` only. Retrieval and eval run fully offline after models are cached.
+- LLM generation (`cli.py` / `generate.py` / `server.py`): `LLM_PROVIDER` = `anthropic` \| `openai` \| `ollama` \| `xai`. Keys: `LLM_API_KEY`, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`. Unset provider + `ANTHROPIC_API_KEY` keeps the old Anthropic default. Copy `rag-demo/.env.example` → `rag-demo/.env` (gitignored; loaded by `llm.py`). Retrieval and eval run fully offline after models are cached.
 - First retrieve/eval/index build downloads Hugging Face models; subsequent runs use the local cache.
 - `index/` and `.venv/` are gitignored. A committed tree has no index; rebuild locally.
 

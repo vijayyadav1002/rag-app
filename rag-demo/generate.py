@@ -1,6 +1,6 @@
 """
 Generation: assemble a grounded prompt from retrieved chunks and call
-Claude for the final answer.
+an LLM for the final answer.
 
 Two accuracy levers live here, separate from retrieval quality:
 1. Forcing citations ([1], [2], ...) ties every claim back to a specific
@@ -9,20 +9,20 @@ Two accuracy levers live here, separate from retrieval quality:
    contain the answer, rather than letting the model fall back on its own
    (unverified, un-cited) general knowledge.
 
+Which vendor runs the model is llm.py (Anthropic vs OpenAI-compatible,
+including Ollama). This file stays the grounded-prompt layer.
+
 `answer()` is the blocking CLI path. `answer_stream()` is the same retrieve
-→ prompt → Claude sequence, but yields typed events so a UI can show the
+→ prompt → LLM sequence, but yields typed events so a UI can show the
 pipeline instead of a single blob at the end.
 """
 
-import os
 from collections.abc import Iterator
 from threading import Event
 
-from anthropic import Anthropic
-
+from llm import LLMConfigError, complete, load_settings, stream as llm_stream
 from retrieve import RetrievedChunk, retrieve
 
-MODEL = "claude-sonnet-4-5"
 PREVIEW_CHARS = 240
 NO_INFO = (
     "I don't have information about that in the available documents."
@@ -66,15 +66,12 @@ def answer(question: str, top_k: int = 4) -> tuple[str, list[RetrievedChunk]]:
     if not chunks:
         return NO_INFO, []
 
-    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     prompt = build_prompt(question, chunks)
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=500,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text, chunks
+    try:
+        text = complete(SYSTEM_PROMPT, prompt)
+    except LLMConfigError as exc:
+        return str(exc), chunks
+    return text, chunks
 
 
 def answer_stream(
@@ -105,25 +102,23 @@ def answer_stream(
     if _cancelled(cancel):
         return
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        yield {"type": "error", "message": "ANTHROPIC_API_KEY is not set."}
+    try:
+        load_settings()
+    except LLMConfigError as exc:
+        yield {"type": "error", "message": str(exc)}
         return
 
     yield {"type": "status", "stage": "generating"}
     prompt = build_prompt(question, chunks)
     try:
-        client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        with client.messages.stream(
-            model=MODEL,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                if _cancelled(cancel):
-                    return
-                if text:
-                    yield {"type": "token", "text": text}
+        for text in llm_stream(SYSTEM_PROMPT, prompt, cancel=cancel):
+            if _cancelled(cancel):
+                return
+            if text:
+                yield {"type": "token", "text": text}
+    except LLMConfigError as exc:
+        yield {"type": "error", "message": str(exc)}
+        return
     except Exception as exc:
         yield {"type": "error", "message": f"Generation failed: {exc}"}
         return
