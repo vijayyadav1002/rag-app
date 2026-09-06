@@ -13,6 +13,7 @@ precision. This two-stage retrieve-then-rerank pattern is the standard
 accuracy lever in production RAG systems.
 """
 
+import json
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,8 @@ import numpy as np
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 INDEX_DIR = Path(__file__).parent / "index"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+QUERY_PREFIX = "search_query: "
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 _embedder = None
@@ -35,6 +37,16 @@ def _load():
     global _embedder, _reranker, _index, _chunks
     if _index is not None:
         return
+    config_path = INDEX_DIR / "config.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            cfg = json.load(f)
+        indexed_model = cfg.get("embedding_model")
+        if indexed_model and indexed_model != EMBEDDING_MODEL:
+            raise RuntimeError(
+                f"Index was built with {indexed_model!r}, but retrieve.py "
+                f"uses {EMBEDDING_MODEL!r}. Re-run build_index.py."
+            )
     _embedder = SentenceTransformer(EMBEDDING_MODEL)
     _reranker = CrossEncoder(RERANKER_MODEL)
     _index = faiss.read_index(str(INDEX_DIR / "chunks.faiss"))
@@ -54,7 +66,9 @@ class RetrievedChunk:
 def vector_search(query: str, top_k: int = 20) -> list[RetrievedChunk]:
     """Stage 1: fast approximate candidate retrieval over the whole corpus."""
     _load()
-    q_emb = _embedder.encode([query], normalize_embeddings=True)
+    q_emb = _embedder.encode(
+        [QUERY_PREFIX + query], normalize_embeddings=True
+    )
     q_emb = np.asarray(q_emb, dtype="float32")
     scores, indices = _index.search(q_emb, top_k)
     results = []

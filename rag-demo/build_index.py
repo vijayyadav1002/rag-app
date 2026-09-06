@@ -14,7 +14,11 @@ from sentence_transformers import SentenceTransformer
 
 from chunk import chunk_directory
 
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # small, fast, good enough for a demo
+EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+# Nomic is trained with a task prefix. Documents must use search_document;
+# queries (in retrieve.py) must use search_query. Skipping this quietly
+# wrecks retrieval even though encode() still returns vectors.
+DOCUMENT_PREFIX = "search_document: "
 INDEX_DIR = Path(__file__).parent / "index"
 
 
@@ -24,7 +28,7 @@ def build():
     print(f"Chunked {len(chunks)} chunks from docs/")
 
     model = SentenceTransformer(EMBEDDING_MODEL)
-    texts = [c.text for c in chunks]
+    texts = [DOCUMENT_PREFIX + c.text for c in chunks]
     embeddings = model.encode(texts, show_progress_bar=True, normalize_embeddings=True)
     embeddings = np.asarray(embeddings, dtype="float32")
 

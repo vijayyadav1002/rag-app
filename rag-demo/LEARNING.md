@@ -9,7 +9,7 @@ You do not need prior AI or machine learning. Terms are defined the first time t
 ## How to use this document
 
 1. Skim **The 30-second answer** and **The 5-minute answer**. Those are what you say out loud first.
-2. Read **Part 0** if “embedding,” “token,” or “LLM” are fuzzy. Skip it if they are not.
+2. Read **Part 0** if “embedding,” “token,” “LLM,” or Nomic’s `search_document:` / `search_query:` prefixes are fuzzy. Skip it if they are not.
 3. Read **Parts 1–4** for the story of a single question.
 4. Read **Part 5** with the matching `.py` file open. That is the deep file-by-file pass.
 5. Use **Part 8** as interview drills.
@@ -20,7 +20,7 @@ Commands are always run from `rag-demo/`.
 
 ## The 30-second answer
 
-> This is a retrieval-augmented generation system over a fake company’s HR and IT docs. We do **not** dump the whole handbook into the model. At index time we split docs into chunks, turn each chunk into a vector, and store those vectors. At question time we embed the question the same way, find the nearest chunks, rerank them, and only then ask Claude to answer **using those excerpts**, with citations. If the excerpts don’t contain the answer, the prompt forbids guessing.
+> This is a retrieval-augmented generation system over a fake company’s HR and IT docs. We do **not** dump the whole handbook into the model. At index time we split docs into chunks, embed each chunk with Nomic (`search_document:` + text), and store those vectors. At question time we embed the question with the same model (`search_query:` + question), find the nearest chunks, rerank them, and only then ask Claude to answer **using those excerpts**, with citations. If the excerpts don’t contain the answer, the prompt forbids guessing.
 
 That paragraph is the whole architecture. Everything else is how those steps are implemented here, and why each step exists.
 
@@ -37,11 +37,11 @@ This app does that in two clocks:
 **Offline (once, or whenever `docs/` changes)**
 
 1. `chunk.py` cuts 11 markdown files into ~52 overlapping chunks, split on `##` headings first.
-2. `build_index.py` runs an embedding model (`all-MiniLM-L6-v2`) on every chunk. Each chunk becomes a list of 384 numbers. Those vectors go into a FAISS index (`IndexFlatIP` on L2-normalized vectors, which is cosine similarity). The original chunk text is pickled next to the index.
+2. `build_index.py` runs an embedding model (`nomic-ai/nomic-embed-text-v1.5`) on every chunk, prefixed with `search_document: `. Each chunk becomes a list of 768 numbers. Those vectors go into a FAISS index (`IndexFlatIP` on L2-normalized vectors, which is cosine similarity). The original chunk text is pickled next to the index (without the Nomic prefix).
 
 **Online (every question)**
 
-3. `retrieve.py` embeds the question with the **same** model, asks FAISS for the 20 nearest chunks, then a **cross-encoder** reranker scores those 20 as (question, chunk) pairs and keeps the top 4.
+3. `retrieve.py` embeds the question with the **same** Nomic model, but prefixed `search_query: ` (not `search_document: `). It asks FAISS for the 20 nearest chunks, then a **cross-encoder** reranker (still MiniLM) scores those 20 as (question, chunk) pairs and keeps the top 4.
 4. `generate.py` builds a prompt: “answer ONLY from these numbered excerpts; cite `[1]`; if it’s not there, say you don’t know.” Claude (`claude-sonnet-4-5`) writes the answer.
 5. `cli.py` prints the answer. `server.py` + `static/index.html` stream the same pipeline over a WebSocket so you can *watch* retrieve → sources → tokens.
 
@@ -71,11 +71,28 @@ Fluent, confident text that is not true (or not true *of this company*). RAG doe
 
 ### Embedding / vector
 
-An **embedding model** takes text and returns a list of numbers (here, **384** of them). Texts with similar *meaning* land near each other in that 384-dimensional space. “How many vacation days?” and a paragraph about PTO accrual should be close, even if they share few exact words.
+An **embedding model** takes text and returns a list of numbers (here, **768** of them). Texts with similar *meaning* land near each other in that 768-dimensional space. “How many vacation days?” and a paragraph about PTO accrual should be close, even if they share few exact words.
 
-You can picture a map: “PTO policy” is in one neighborhood, “thermostat E3 error” in another. The map is not 2D — it is 384-D — but “near / far” still works.
+You can picture a map: “PTO policy” is in one neighborhood, “thermostat E3 error” in another. The map is not 2D — it is 768-D — but “near / far” still works.
 
 These numbers are a **vector**. Comparing two vectors is how search works without keyword matching.
+
+### Task prefixes (Nomic-specific)
+
+Some embedding models, including **`nomic-ai/nomic-embed-text-v1.5`**, are trained **asymmetric**: a document and a question about that document should land near each other, but they are not encoded as if they were the same kind of text.
+
+Nomic does that with a short string glued to the front of whatever you embed:
+
+| Prefix | When | Example |
+|--------|------|---------|
+| `search_document: ` | Index time, every chunk | `search_document: Paid Time Off (PTO) Policy > Accrual\nEmployees accrue…` |
+| `search_query: ` | Query time, the user’s question | `search_query: How many PTO days do I get per year?` |
+
+The model was trained on those exact prefixes. `encode()` will still return 768 numbers if you omit them — they will just be the *wrong* 768 numbers, and nearest-neighbor search quietly gets worse. That is the most common bug when switching from MiniLM or OpenAI embeddings (which do not use prefixes).
+
+These prefixes are **not** stored in `metadata.pkl` and **not** sent to Claude. They exist only for the embedding forward pass. Do not confuse them with the *heading* prefix inside each chunk (`Paid Time Off (PTO) Policy > Accrual`), which *is* part of the stored text.
+
+Nomic v1.5’s full vector is 768 dimensions. The model was also trained so a truncated prefix of that vector (Matryoshka) is still usable; this demo keeps all 768.
 
 ### Cosine similarity, L2 normalization, inner product
 
@@ -138,19 +155,19 @@ docs/*.md
    ▼
    Chunk dataclasses
    │
-   │  build_index.py    embed + FAISS + pickle
+   │  build_index.py    Nomic embed (`search_document:`) + FAISS + pickle
    ▼
-index/chunks.faiss      52 vectors, dim 384
-index/metadata.pkl      the Chunk objects in the same order
+index/chunks.faiss      52 vectors, dim 768
+index/metadata.pkl      the Chunk objects in the same order (no Nomic prefix)
 index/config.json       which model, how many chunks
 
                     ONLINE (every question)
 question
    │
    │  retrieve.py
-   │     embed query
+   │     Nomic embed query (`search_query:`)
    │     FAISS top 20
-   │     cross-encoder rerank → top 4
+   │     MiniLM cross-encoder rerank → top 4
    ▼
 RetrievedChunk × 4
    │
@@ -185,7 +202,7 @@ This is the first thing people mix up in interviews.
 
 If someone edits `docs/pto_policy.md` and does not rebuild, the index still holds the *old* vectors and the *old* pickled text. Retrieval will be wrong or stale. That is why the README says: rebuild after any `docs/` change.
 
-The embedding model at query time **must be the same** as at index time (`all-MiniLM-L6-v2`). A vector from model A is not comparable to a vector from model B. `config.json` records which model built the index so you can catch that class of bug.
+The embedding model at query time **must be the same** as at index time (`nomic-ai/nomic-embed-text-v1.5`). A vector from model A is not comparable to a vector from model B. `config.json` records which model built the index so you can catch that class of bug. `retrieve.py` refuses to load if they disagree.
 
 ---
 
@@ -202,11 +219,11 @@ Question: **“How many PTO days do I get per year?”**
 - `text`: that heading, a newline, then the section body (accrual is 1.25 days/month, 15 days/year; 20 days after 5 years)
 - `source_file`: `pto_policy.md`
 
-The heading is **inside the text that gets embedded**. The vector “knows” this paragraph is about PTO accrual even if a later window started mid-list.
+The heading is **inside the text that gets embedded**. The vector “knows” this paragraph is about PTO accrual even if a later window started mid-list. At encode time Nomic also sees `search_document: ` in front of that string; that task prefix is not saved on the `Chunk`.
 
 ### 2. The question becomes a vector
 
-`retrieve.vector_search` calls `_embedder.encode(["How many PTO days do I get per year?"], normalize_embeddings=True)`. Result: shape `(1, 384)`, `float32`.
+`retrieve.vector_search` calls `_embedder.encode(["search_query: How many PTO days do I get per year?"], normalize_embeddings=True)`. Result: shape `(1, 768)`, `float32`. The `search_query:` prefix is required by Nomic; documents were indexed with `search_document:`.
 
 ### 3. FAISS nearest neighbors
 
@@ -304,7 +321,7 @@ If a section is ≤ 800 chars, it is one piece. If longer, take `[0:800]`, then 
 3. Strip the `#` title line so it is not duplicated as a fake section.
 4. For each `##` section, prefix every piece with `{doc_title} > {heading}\n`.
 
-That prefix is an embedding trick: the vector for “1.25 days per month” also contains “Paid Time Off (PTO) Policy > Accrual”, so a query about PTO still matches even if the body never repeats the words “paid time off.”
+That heading prefix is an embedding trick: the vector for “1.25 days per month” also contains “Paid Time Off (PTO) Policy > Accrual”, so a query about PTO still matches even if the body never repeats the words “paid time off.” It is a different idea from Nomic’s `search_document:` / `search_query:` prefixes (task instructions for the model, not titles).
 
 **`chunk_directory`** — `sorted(docs_dir.glob("*.md"))` so index order is deterministic.
 
@@ -316,19 +333,19 @@ That prefix is an embedding trick: the vector for “1.25 days per month” also
 
 **Why this file exists.** Query time should not re-read and re-embed the whole corpus. We pay that cost once.
 
-**`EMBEDDING_MODEL = "all-MiniLM-L6-v2"`**
+**`EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"`**
 
-A small **sentence transformer** (a model trained to emit embeddings for sentences/passages). MiniLM is fast on a laptop. “Good enough for a demo” is explicit in the comment: we chose inspectability over SOTA retrieval quality. A production system might use a larger embedding model or a commercial embeddings API. The *algorithm* would be the same.
+A **sentence transformer** trained to emit embeddings for sentences/passages. Unlike MiniLM, Nomic is an **asymmetric** retrieval model: you must prefix documents with `search_document: ` at index time and queries with `search_query: ` at search time. The prefix is only for the embedding model — pickled chunk text and the LLM prompt stay unprefixed. Default output is **768** dimensions (v1.5 also supports shortening the vector via Matryoshka; this demo uses the full 768).
 
-**`model.encode(texts, normalize_embeddings=True)`**
+**`DOCUMENT_PREFIX + c.text`, then `model.encode(..., normalize_embeddings=True)`**
 
-- Input: list of chunk strings, same order as `chunks`.
-- Output: a matrix, rows = chunks, columns = 384.
+- Input: `search_document: ` plus each chunk string, same order as `chunks`. The pickle still stores `c.text` without that prefix.
+- Output: a matrix, rows = chunks, columns = 768.
 - Cast to `float32` because FAISS wants that dtype.
 
 **`faiss.IndexFlatIP(embeddings.shape[1])` then `index.add(embeddings)`**
 
-- `shape[1]` is 384 — the index is created for that dimension.
+- `shape[1]` is 768 — the index is created for that dimension.
 - `add` appends rows in order. Row 0 ↔ `chunks[0]`.
 
 FAISS does **not** store the original English. It stores the numbers. That is why we also pickle `chunks`.
@@ -353,7 +370,7 @@ FAISS does **not** store the original English. It stores the numbers. That is wh
 
 **Module globals `_embedder`, `_reranker`, `_index`, `_chunks`**
 
-Loading MiniLM + the cross-encoder + FAISS from disk takes seconds and uses RAM. `_load()` does it once, then no-ops. `server.py` calls `_load()` at startup so the *first* browser question is not the one that pays the load. `cli.py` pays it on first `answer()`.
+Loading the embedder + the cross-encoder + FAISS from disk takes seconds and uses RAM. `_load()` does it once, then no-ops. `server.py` calls `_load()` at startup so the *first* browser question is not the one that pays the load. `cli.py` pays it on first `answer()`.
 
 This is slightly leaky (`server` imports `_load`), and it is intentional for a tiny demo: one process, one copy of the models.
 
@@ -363,8 +380,8 @@ Search results add scores. `vector_score` is the FAISS inner product. `rerank_sc
 
 **`vector_search(query, top_k=20)`**
 
-1. `_load()`
-2. Embed the query with **the same model and the same normalization** as index time.
+1. `_load()` (and abort if `config.json`’s `embedding_model` is not `nomic-ai/nomic-embed-text-v1.5`)
+2. Embed `QUERY_PREFIX + query` (`search_query: …`) with the **same model and the same normalization** as index time. Same model, **different prefix** than documents.
 3. `search` for `top_k` neighbors.
 4. Map each index back to `_chunks[idx]`.
 
@@ -489,7 +506,7 @@ That is not “RAG is solved.” It is “11 short, topically distinct docs are 
 - Lifespan: refuse to start if `index/chunks.faiss` is missing; preload `_load()` on a worker thread so model init does not block the event loop as badly.
 - One question at a time per connection (`busy`). A second question while answering gets `already answering`.
 - Empty string → error, no retrieve.
-- `_pump` runs `answer_stream` on a **daemon thread** because retrieve (PyTorch) is blocking. Events go onto an `asyncio.Queue`; the async coroutine `send_json`s them. If this ran on the event loop, one user’s MiniLM forward pass would freeze every other socket.
+- `_pump` runs `answer_stream` on a **daemon thread** because retrieve (PyTorch) is blocking. Events go onto an `asyncio.Queue`; the async coroutine `send_json`s them. If this ran on the event loop, one user’s embedding forward pass would freeze every other socket.
 - Disconnect → `cancel.set()`.
 
 Uvicorn serves `127.0.0.1:8000`. This is a learning server, not a deployment.
@@ -530,7 +547,8 @@ Interviewers love “why 4, not 5?” The honest answer is: **defaults that are 
 | `candidate_pool` | 20 | Reranker sees more; slower; more chance the true hit is in the pool | Faster; more risk the true hit never reaches rerank |
 | `top_k` to the LLM | 4 | More evidence; more prompt noise, cost, and distraction | Cheaper, cleaner; may drop a needed section |
 | `max_tokens` | 500 | Longer answers | Truncated answers |
-| Embedding dim | 384 (MiniLM) | (model choice) Larger models: better recall, slower, bigger index | — |
+| Embedding dim | 768 (Nomic v1.5) | Full vector; v1.5 can truncate (Matryoshka) for speed | Shorter vectors: faster, usually slightly worse recall |
+| `DOCUMENT_PREFIX` / `QUERY_PREFIX` | `search_document: ` / `search_query: ` | — (fixed by the model’s training) | Omitting them does not crash; it just retrieves worse |
 
 **Why FAISS and not a database.** 52 vectors fit in RAM. FAISS is the industry-default library for this exact operation. Chroma/Pinecone would hide the `IndexFlatIP` + pickle split. We wanted that split visible: **numbers in one file, text in another, joined by row index.**
 
@@ -567,9 +585,11 @@ Recall@k labels files, not spans. You can retrieve `pto_policy.md` and still hav
 
 Edit `docs/`, forget `build_index.py`. The pickle still has old text. The UI will show old previews.
 
-### 5. Embedding mismatch
+### 5. Embedding mismatch (model or prefix)
 
-Rebuild with model A, query with model B. Distances are garbage. `config.json` is your note to self.
+Rebuild with model A, query with model B. Distances are garbage. `config.json` records the model; `retrieve.py` refuses to load if it disagrees.
+
+A quieter variant with Nomic: same model, but you forget `search_document:` on the index or `search_query:` on the question. `encode()` succeeds. Recall drops. Debug by reading `build_index.py` / `retrieve.py`, not by staring at FAISS scores.
 
 ### 6. Prompt injection (not implemented as a defense)
 
@@ -591,7 +611,7 @@ Retrieval-augmented generation: fetch relevant pieces of a knowledge base, put t
 
 **“Walk me through your pipeline.”**
 
-Markdown → heading-aware chunks with overlap and a title prefix → MiniLM embeddings, L2-normalized → FAISS IndexFlatIP → query embed → top 20 → MiniLM cross-encoder rerank → top 4 → Claude with a grounded system prompt and `[n]` citations → CLI or WebSocket UI. Eval is recall@k on 20 labeled questions, retrieval only.
+Markdown → heading-aware chunks with overlap and a title prefix → Nomic v1.5 embeddings (`search_document:` / `search_query:`), L2-normalized → FAISS IndexFlatIP → query embed → top 20 → MiniLM cross-encoder rerank → top 4 → Claude with a grounded system prompt and `[n]` citations → CLI or WebSocket UI. Eval is recall@k on 20 labeled questions, retrieval only.
 
 **“Why not just use a bigger context window?”**
 
@@ -607,7 +627,11 @@ Overlap: facts on a cut appear in two windows. Headings: don’t split a section
 
 **“Bi-encoder vs cross-encoder?”**
 
-Bi-encoder embeds query and doc separately — fast, indexable. Cross-encoder reads both together — more accurate, too slow for the full corpus. Retrieve 20 with the first, rerank with the second.
+Bi-encoder embeds query and doc separately — fast, indexable. Ours is Nomic v1.5 (768-D, asymmetric prefixes). Cross-encoder reads both together — more accurate, too slow for the full corpus. Ours is MiniLM trained on MS MARCO. Retrieve 20 with the first, rerank with the second.
+
+**“Why `search_document:` and `search_query:`?”**
+
+Nomic was trained that way. Documents and questions are different kinds of text; the prefix tells the model which job this string is doing so a question vector lands near the right document vector. We do not pickle the prefix or send it to Claude. MiniLM and OpenAI embeddings do not need this; Nomic does. Forgetting it is the classic migration bug.
 
 **“Is rerank always better?”**
 
@@ -631,7 +655,7 @@ Exact inner product. After L2 normalization that *is* cosine. Exact search is fi
 
 **“Why Python?”**
 
-Sentence-transformers, FAISS, and Anthropic’s SDK are native here. The WebSocket layer is a thin FastAPI pipe. I would not reimplement MiniLM in another language to learn RAG.
+Sentence-transformers, FAISS, and Anthropic’s SDK are native here. The WebSocket layer is a thin FastAPI pipe. I would not reimplement the embedder in another language to learn RAG.
 
 **“What would you add in production?”** (from the README, be honest you did not build them)
 
@@ -639,7 +663,7 @@ Hybrid BM25 + vectors (exact tokens: error codes, SKUs). Query rewrite for chat 
 
 **“Show me a bug in your own system.”**
 
-Rerank can prefer IT security over equipment return for the laptop query. Eval labels files not spans. No similarity threshold. Index can go stale. No multi-turn. That’s the demo, not a cover-up.
+Rerank can prefer IT security over equipment return for the laptop query. Eval labels files not spans. No similarity threshold. Index can go stale. Nomic prefixes are easy to drop on a rewrite. No multi-turn. That’s the demo, not a cover-up.
 
 ---
 

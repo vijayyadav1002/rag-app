@@ -22,7 +22,7 @@ There is no lint, format, test-runner, or deploy command.
 ## Tech stack
 
 - Python 3.12, stdlib-style scripts (no FastAPI/Flask, no LangChain/LlamaIndex)
-- `sentence-transformers` — `all-MiniLM-L6-v2` bi-encoder; `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker
+- `sentence-transformers` — `nomic-ai/nomic-embed-text-v1.5` bi-encoder (`search_document:` / `search_query:` prefixes); `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker
 - `faiss-cpu` — `IndexFlatIP` on L2-normalized vectors (cosine via inner product)
 - `anthropic` — generation with `claude-sonnet-4-5`
 - `numpy` — embedding arrays as `float32`
