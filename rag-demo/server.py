@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+from build_index import IndexBuildError, build
 from generate import answer_stream
 from library import (
     MAX_UPLOAD_FILES,
@@ -26,7 +27,7 @@ from library import (
     list_docs,
     save_upload,
 )
-from retrieve import _load
+from retrieve import _load, reload as reload_index
 
 ROOT = Path(__file__).parent
 INDEX_PATH = ROOT / "index" / "chunks.faiss"
@@ -77,6 +78,17 @@ def _docs_body() -> dict:
     return {**_status_body(), "docs": list_docs()}
 
 
+def _rebuild_sync() -> dict:
+    config = build()
+    try:
+        reload_index()
+    except Exception as exc:
+        raise RuntimeError(
+            "Index rebuilt on disk but failed to load. Restart the server."
+        ) from exc
+    return config
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -124,6 +136,32 @@ def api_delete(name: str):
     except FileNotFoundError:
         raise HTTPException(404, "File not found.")
     return _docs_body()
+
+
+@app.post("/api/reindex")
+async def api_reindex():
+    global _rebuilding
+    if _rebuilding:
+        raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
+    _rebuilding = True
+    try:
+        await _idle().wait()
+        try:
+            config = await asyncio.to_thread(_rebuild_sync)
+        except IndexBuildError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, str(exc)[:300]) from exc
+        return {
+            "ok": True,
+            "num_chunks": config["num_chunks"],
+            "indexed_at": config["indexed_at"],
+            "files": config["files"],
+        }
+    finally:
+        _rebuilding = False
 
 
 @app.get("/manifest.webmanifest")
