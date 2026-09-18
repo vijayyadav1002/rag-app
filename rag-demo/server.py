@@ -94,6 +94,16 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/library")
+def library_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "library.html")
+
+
+@app.get("/app.css")
+def app_css() -> FileResponse:
+    return FileResponse(STATIC_DIR / "app.css", media_type="text/css")
+
+
 @app.get("/api/status")
 def api_status() -> dict:
     return _status_body()

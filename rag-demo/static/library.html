@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ask Northwind</title>
+  <title>Library · Ask Northwind</title>
   <meta name="theme-color" content="#c9a36a" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Ask Northwind" />
@@ -13,25 +13,13 @@
 </head>
 <body>
   <main>
-    <h1>Ask Northwind</h1>
-    <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes.</p>
-
-    <form id="ask-form">
-      <input id="question" type="text" autocomplete="off"
-             placeholder="How many PTO days do I get per year?" />
-      <button type="submit" id="ask">Ask</button>
-    </form>
-
-    <section class="panel" aria-live="polite">
-      <h2>Pipeline</h2>
-      <p id="status" class="idle">Ready</p>
-      <div id="chunks"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Answer</h2>
-      <p id="answer"></p>
-    </section>
+    <header class="site-header">
+      <h1><a href="/">Ask Northwind</a></h1>
+      <nav>
+        <a href="/">Ask</a>
+        <a href="/library" class="active">Library</a>
+      </nav>
+    </header>
 
     <section class="panel" id="library">
       <h2>Library</h2>
@@ -43,21 +31,8 @@
         <button type="button" id="reindex">Re-index</button>
       </div>
     </section>
-
-    <footer>
-      <span id="conn">disconnected</span>
-      <button type="button" class="ghost" id="reconnect">Reconnect</button>
-    </footer>
   </main>
   <script>
-    const form = document.getElementById("ask-form");
-    const input = document.getElementById("question");
-    const askBtn = document.getElementById("ask");
-    const statusEl = document.getElementById("status");
-    const chunksEl = document.getElementById("chunks");
-    const answerEl = document.getElementById("answer");
-    const connEl = document.getElementById("conn");
-    const reconnectBtn = document.getElementById("reconnect");
     const libStatus = document.getElementById("lib-status");
     const docList = document.getElementById("doc-list");
     const uploadBtn = document.getElementById("upload");
@@ -69,107 +44,7 @@
       missing_on_disk: "missing on disk",
     };
 
-    let ws = null;
-    let answering = false;
     let rebuilding = false;
-
-    const STAGE = {
-      retrieving: "Searching documents…",
-      generating: "Writing answer…",
-    };
-
-    function setConn(state) {
-      connEl.className = state;
-      connEl.textContent = state;
-      reconnectBtn.classList.toggle("show", state !== "connected");
-    }
-
-    function setBusy(busy) {
-      answering = busy;
-      input.disabled = busy || rebuilding;
-      askBtn.disabled = busy || rebuilding;
-    }
-
-    function setStatus(text, kind) {
-      statusEl.textContent = text;
-      statusEl.className = kind || "";
-    }
-
-    function connect() {
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        return;
-      }
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws`);
-      ws.onopen = () => setConn("connected");
-      ws.onerror = () => setConn("error");
-      ws.onclose = () => {
-        setConn("disconnected");
-        setBusy(false);
-        setStatus("Ready", "idle");
-      };
-      ws.onmessage = (ev) => handle(JSON.parse(ev.data));
-    }
-
-    function handle(event) {
-      if (event.type === "status") {
-        setStatus(STAGE[event.stage] || event.stage);
-        return;
-      }
-      if (event.type === "sources") {
-        chunksEl.replaceChildren();
-        if (!event.chunks.length) {
-          const empty = document.createElement("p");
-          empty.className = "preview";
-          empty.textContent = "No matching excerpts.";
-          chunksEl.appendChild(empty);
-          return;
-        }
-        for (const chunk of event.chunks) {
-          const card = document.createElement("article");
-          card.className = "chunk";
-          const meta = document.createElement("div");
-          meta.className = "meta";
-          meta.textContent = `[${chunk.n}] ${chunk.source_file}`;
-          const preview = document.createElement("div");
-          preview.className = "preview";
-          preview.textContent = chunk.preview;
-          card.append(meta, preview);
-          chunksEl.appendChild(card);
-        }
-        return;
-      }
-      if (event.type === "token") {
-        answerEl.textContent += event.text;
-        return;
-      }
-      if (event.type === "done") {
-        setBusy(false);
-        setStatus("Ready", "idle");
-        input.focus();
-        return;
-      }
-      if (event.type === "error") {
-        setBusy(false);
-        setStatus(event.message, "err");
-        input.focus();
-      }
-    }
-
-    form.addEventListener("submit", (e) => {
-      e.preventDefault();
-      const question = input.value.trim();
-      if (!question || answering) return;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setStatus("Not connected. Use Reconnect.", "err");
-        return;
-      }
-      chunksEl.replaceChildren();
-      answerEl.textContent = "";
-      setStatus("Sending…");
-      setBusy(true);
-      ws.send(JSON.stringify({ question }));
-    });
 
     function isOffline() {
       return !navigator.onLine;
@@ -182,8 +57,6 @@
 
     function setRebuildLock(locked) {
       rebuilding = locked;
-      input.disabled = locked || answering;
-      askBtn.disabled = locked || answering;
       uploadBtn.disabled = locked;
       reindexBtn.disabled = locked;
       docList.querySelectorAll("button").forEach((b) => { b.disabled = locked; });
@@ -210,6 +83,7 @@
         const body = await res.json().catch(() => ({}));
         if (body.rebuilding) {
           setRebuildLock(true);
+          setLibStatus("Rebuilding…");
           startRebuildPoll();
           return;
         }
@@ -360,10 +234,25 @@
 
     window.addEventListener("offline", () => setLibStatus("You're offline.", "err"));
 
-    reconnectBtn.addEventListener("click", connect);
-    connect();
-    refreshLibrary();
-    input.focus();
+    async function init() {
+      if (isOffline()) {
+        setLibStatus("You're offline.", "err");
+        return;
+      }
+      try {
+        const statusRes = await fetch("/api/status");
+        const status = await statusRes.json().catch(() => ({}));
+        if (status.rebuilding) {
+          setRebuildLock(true);
+          setLibStatus("Rebuilding…");
+          startRebuildPoll();
+        }
+      } catch (err) {
+        setLibStatus("You're offline.", "err");
+      }
+      await refreshLibrary();
+    }
+    init();
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js");
