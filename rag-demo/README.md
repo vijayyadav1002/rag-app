@@ -8,7 +8,7 @@ explain every stage of a RAG system, not just call a library.
 ## Pipeline
 
 ```
-docs/*.md
+docs/*.md               — Library can write these; Re-index calls build()
    │  chunk.py        — heading-aware chunking with overlap
    ▼
 build_index.py         — embed chunks (sentence-transformers), index (FAISS)
@@ -46,6 +46,9 @@ cp .env.example .env
 # Browser UI (same pipeline, streamed over a WebSocket)
 ./.venv/bin/python server.py
 # open http://127.0.0.1:8000
+# Installable (Add to Home Screen). The page has a Library panel;
+# Re-index rebuilds search from docs/. Upload does not change
+# answers until Re-index.
 ```
 
 ## LLM providers
@@ -185,21 +188,30 @@ being able to discuss:
 |---|---|
 | `docs/` | Synthetic source documents (the "company knowledge base") |
 | `chunk.py` | Heading-aware chunking with overlap |
-| `build_index.py` | Embed chunks, build/persist the FAISS index |
-| `retrieve.py` | Vector search + cross-encoder rerank |
+| `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`) |
+| `retrieve.py` | Vector search + cross-encoder rerank; `reload()` hot-swaps FAISS |
 | `generate.py` | Prompt assembly + citations (`answer_stream` for the UI) |
 | `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k evaluation harness |
-| `server.py` | FastAPI WebSocket shell; no extra RAG logic |
-| `static/index.html` | Single-page UI: pipeline + streamed answer |
+| `library.py` | Safe names, list/save/delete markdown in `docs/` (no rebuild) |
+| `server.py` | FastAPI WebSocket shell + library REST + Re-index lock (`python-multipart` for uploads) |
+| `static/index.html` | Ask UI + Library panel + PWA registration |
+| `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
+| `static/sw.js` | Cache the UI shell only (not `/ws` or `/api/*`) |
 
 ## Web UI
 
-`server.py` serves `static/index.html` at `/` and a WebSocket at `/ws`. The page sends `{ "question": "..." }` and renders events in order: retrieving → source excerpts → tokens → done. The RAG path is still retrieve-then-rerank-then-Claude; the socket is only transport.
+`server.py` serves `static/index.html` at `/` and a WebSocket at `/ws`. The page sends `{ "question": "..." }` and renders events in order: retrieving → source excerpts → tokens → done. The RAG path is still retrieve-then-rerank-then-generate; the socket is only transport. The page is a PWA: Add to Home Screen installs it; the service worker caches the shell, not answers.
 
 ```bash
 ./.venv/bin/python server.py
 ```
 
-Then open `http://127.0.0.1:8000`. Rebuild the index the same way as for the CLI whenever `docs/` changes. `cli.py` is unchanged.
+Then open `http://127.0.0.1:8000`. `cli.py` is unchanged.
+
+## Library and re-index
+
+The Library panel lists `docs/*.md`. Upload is markdown only (same filename overwrites). Delete removes the file from disk. There is no login — anyone who can open the app can change the corpus. Upload and delete do not change answers until you click **Re-index**, which rebuilds FAISS from every `docs/*.md` and hot-reloads search. While it rebuilds, Ask, upload, and delete are locked.
+
+Auth, PDF/Word, chat history, auto-reindex on upload, and offline Q&A are out of scope.

@@ -12,7 +12,7 @@ All code lives in `rag-demo/`. Run commands from that directory.
 | `./.venv/bin/pip install -r requirements.txt` | Install deps |
 | `./.venv/bin/python build_index.py` | Chunk `docs/`, embed, persist FAISS index. Run once, and again whenever `docs/` changes. |
 | `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs an LLM provider; see Environment) |
-| `./.venv/bin/python server.py` | Browser UI at http://127.0.0.1:8000 (WebSocket stream; same LLM env as CLI) |
+| `./.venv/bin/python server.py` | Browser UI at http://127.0.0.1:8000 (installable PWA, Library panel, Re-index; WebSocket stream; same LLM env as CLI) |
 | `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
 | `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
 | `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
@@ -21,11 +21,12 @@ There is no lint, format, test-runner, or deploy command.
 
 ## Tech stack
 
-- Python 3.12, stdlib-style scripts (no FastAPI/Flask, no LangChain/LlamaIndex)
+- Python 3.12, stdlib-style scripts (FastAPI only for the PWA/WebSocket UI; no LangChain/LlamaIndex)
 - `sentence-transformers` — `nomic-ai/nomic-embed-text-v1.5` bi-encoder (`search_document:` / `search_query:` prefixes); `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker
 - `faiss-cpu` — `IndexFlatIP` on L2-normalized vectors (cosine via inner product)
 - `anthropic` / `openai` — generation via `llm.py` (Anthropic Messages or OpenAI-compatible Chat Completions, including Ollama)
 - `numpy` — embedding arrays as `float32`
+- FastAPI + uvicorn + `python-multipart` — PWA/WebSocket UI and library uploads only
 
 ## Architecture
 
@@ -45,6 +46,7 @@ llm.py                  Anthropic or OpenAI-compatible LLM
    ▼
 cli.py                  argv question → printed answer + sources
 eval.py                 recall@k, vector-only vs reranked
+server.py               PWA library writes docs/; Re-index → build() + retrieve.reload()
 ```
 
 Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddings → FAISS → `RetrievedChunk` → numbered excerpts in the LLM prompt.
@@ -52,8 +54,11 @@ Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddi
 ## Key files
 
 - `rag-demo/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`
-- `rag-demo/build_index.py` — writes `index/chunks.faiss`, `index/metadata.pkl`, `index/config.json`
-- `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals
+- `rag-demo/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`
+- `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting
+- `rag-demo/library.py` — safe markdown names; list/save/delete `docs/` (does not rebuild the index)
+- `rag-demo/static/manifest.webmanifest` — PWA install metadata
+- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v2`); never `/ws` or `/api/*`
 - `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `rag-demo/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
@@ -84,7 +89,7 @@ Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddi
 
 ## Gotchas
 
-- Rebuild the index after any `docs/` edit; retrieval reads whatever is on disk.
+- Rebuild the index after any `docs/` edit (CLI `build_index.py` or the UI **Re-index**); retrieval reads whatever is on disk. A running server does not pick up a CLI rebuild until Re-index or restart.
 - Do not treat rerank as strictly better here. README documents a laptop-return query that vector search gets right and the reranker flips to `it_security_policy.md`.
 - Generation must not use outside knowledge; if chunks are empty or insufficient, say so.
 - Production follow-ups (hybrid BM25, query rewrite, metadata filters, RAGAS, citation verification) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked.
