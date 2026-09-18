@@ -13,7 +13,13 @@
 </head>
 <body>
   <main>
-    <h1>Ask Northwind</h1>
+    <header class="site-header">
+      <h1><a href="/">Ask Northwind</a></h1>
+      <nav>
+        <a href="/" class="active">Ask</a>
+        <a href="/library">Library</a>
+      </nav>
+    </header>
     <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes.</p>
 
     <form id="ask-form">
@@ -33,17 +39,6 @@
       <p id="answer"></p>
     </section>
 
-    <section class="panel" id="library">
-      <h2>Library</h2>
-      <p id="lib-status">Loading documents…</p>
-      <div id="doc-list"></div>
-      <div class="lib-actions">
-        <button type="button" id="upload">Upload .md</button>
-        <input id="doc-file" type="file" accept=".md,text/markdown" multiple />
-        <button type="button" id="reindex">Re-index</button>
-      </div>
-    </section>
-
     <footer>
       <span id="conn">disconnected</span>
       <button type="button" class="ghost" id="reconnect">Reconnect</button>
@@ -58,20 +53,11 @@
     const answerEl = document.getElementById("answer");
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
-    const libStatus = document.getElementById("lib-status");
-    const docList = document.getElementById("doc-list");
-    const uploadBtn = document.getElementById("upload");
-    const fileInput = document.getElementById("doc-file");
-    const reindexBtn = document.getElementById("reindex");
-    const STATE_LABEL = {
-      indexed: "indexed",
-      not_indexed: "not indexed",
-      missing_on_disk: "missing on disk",
-    };
 
     let ws = null;
     let answering = false;
     let rebuilding = false;
+    const REBUILD_MSG = "Index is rebuilding. Try again when it finishes.";
 
     const STAGE = {
       retrieving: "Searching documents…",
@@ -95,6 +81,56 @@
       statusEl.className = kind || "";
     }
 
+    function setRebuildLock(locked) {
+      rebuilding = locked;
+      input.disabled = locked || answering;
+      askBtn.disabled = locked || answering;
+      if (locked) setStatus(REBUILD_MSG, "err");
+    }
+
+    let pollTimer = null;
+
+    function stopRebuildPoll() {
+      if (pollTimer === null) return;
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+
+    function startRebuildPoll() {
+      if (pollTimer !== null) return;
+      pollTimer = setTimeout(pollRebuild, 1000);
+    }
+
+    async function pollRebuild() {
+      pollTimer = null;
+      try {
+        const res = await fetch("/api/status");
+        const body = await res.json().catch(() => ({}));
+        if (body.rebuilding) {
+          setRebuildLock(true);
+          startRebuildPoll();
+          return;
+        }
+        setRebuildLock(false);
+        setStatus("Ready", "idle");
+      } catch (err) {
+        startRebuildPoll();
+      }
+    }
+
+    async function checkRebuildOnLoad() {
+      try {
+        const res = await fetch("/api/status");
+        const body = await res.json().catch(() => ({}));
+        if (body.rebuilding) {
+          setRebuildLock(true);
+          startRebuildPoll();
+        }
+      } catch (err) {
+        // Idle or offline: do not poll.
+      }
+    }
+
     function connect() {
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
@@ -106,7 +142,7 @@
       ws.onclose = () => {
         setConn("disconnected");
         setBusy(false);
-        setStatus("Ready", "idle");
+        if (!rebuilding) setStatus("Ready", "idle");
       };
       ws.onmessage = (ev) => handle(JSON.parse(ev.data));
     }
@@ -151,6 +187,11 @@
       }
       if (event.type === "error") {
         setBusy(false);
+        if (event.message === REBUILD_MSG) {
+          setRebuildLock(true);
+          startRebuildPoll();
+          return;
+        }
         setStatus(event.message, "err");
         input.focus();
       }
@@ -171,198 +212,9 @@
       ws.send(JSON.stringify({ question }));
     });
 
-    function isOffline() {
-      return !navigator.onLine;
-    }
-
-    function setLibStatus(text, kind) {
-      libStatus.textContent = text;
-      libStatus.className = kind || "";
-    }
-
-    function setRebuildLock(locked) {
-      rebuilding = locked;
-      input.disabled = locked || answering;
-      askBtn.disabled = locked || answering;
-      uploadBtn.disabled = locked;
-      reindexBtn.disabled = locked;
-      docList.querySelectorAll("button").forEach((b) => { b.disabled = locked; });
-      reindexBtn.textContent = locked ? "Rebuilding…" : "Re-index";
-    }
-
-    let pollTimer = null;
-
-    function stopRebuildPoll() {
-      if (pollTimer === null) return;
-      clearTimeout(pollTimer);
-      pollTimer = null;
-    }
-
-    function startRebuildPoll() {
-      if (pollTimer !== null) return;
-      pollTimer = setTimeout(pollRebuild, 1000);
-    }
-
-    async function pollRebuild() {
-      pollTimer = null;
-      try {
-        const res = await fetch("/api/status");
-        const body = await res.json().catch(() => ({}));
-        if (body.rebuilding) {
-          setRebuildLock(true);
-          startRebuildPoll();
-          return;
-        }
-        setRebuildLock(false);
-        await refreshLibrary();
-      } catch (err) {
-        setLibStatus("You're offline.", "err");
-        startRebuildPoll();
-      }
-    }
-
-    function renderDocs(docs) {
-      docList.replaceChildren();
-      if (!docs.length) {
-        const empty = document.createElement("p");
-        empty.className = "preview";
-        empty.textContent = "No markdown files in docs/.";
-        docList.appendChild(empty);
-        return;
-      }
-      for (const doc of docs) {
-        const row = document.createElement("div");
-        row.className = "row";
-        const left = document.createElement("div");
-        left.textContent = doc.name;
-        const state = document.createElement("span");
-        state.className = "state " + doc.state;
-        state.textContent = STATE_LABEL[doc.state] || doc.state;
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "ghost";
-        del.textContent = "Delete";
-        del.disabled = rebuilding;
-        del.addEventListener("click", () => removeDoc(doc.name));
-        row.append(left, state, del);
-        if (doc.state === "missing_on_disk") del.hidden = true;
-        docList.appendChild(row);
-      }
-    }
-
-    async function refreshLibrary() {
-      if (isOffline()) {
-        setLibStatus("You're offline.", "err");
-        return;
-      }
-      try {
-        const res = await fetch("/api/docs");
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setLibStatus(body.detail || "Could not load documents.", "err");
-          return;
-        }
-        if (body.rebuilding) {
-          setRebuildLock(true);
-          renderDocs(body.docs || []);
-          setLibStatus("Rebuilding…");
-          startRebuildPoll();
-          return;
-        }
-        stopRebuildPoll();
-        setRebuildLock(false);
-        renderDocs(body.docs || []);
-        const n = body.num_chunks;
-        setLibStatus(n != null ? `${body.docs.length} files · ${n} chunks indexed` : "Ready");
-      } catch (err) {
-        setLibStatus("You're offline.", "err");
-      }
-    }
-
-    async function removeDoc(name) {
-      if (!confirm(`Delete ${name} from disk? Re-index afterward to update search.`)) return;
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
-      try {
-        const res = await fetch("/api/docs/" + encodeURIComponent(name), { method: "DELETE" });
-        const body = await res.json().catch(() => ({}));
-        if (res.status === 409) {
-          setRebuildLock(true);
-          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
-          startRebuildPoll();
-          return;
-        }
-        if (!res.ok) { setLibStatus(body.detail || "Delete failed", "err"); return; }
-        renderDocs(body.docs);
-        setLibStatus("Deleted " + name + ". Re-index to update search.");
-      } catch (err) {
-        setLibStatus("You're offline.", "err");
-      }
-    }
-
-    uploadBtn.addEventListener("click", () => {
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
-      fileInput.click();
-    });
-    fileInput.addEventListener("change", async () => {
-      const files = fileInput.files;
-      if (!files || !files.length) return;
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
-      const fd = new FormData();
-      for (const f of files) fd.append("files", f);
-      try {
-        const res = await fetch("/api/docs", { method: "POST", body: fd });
-        fileInput.value = "";
-        const body = await res.json().catch(() => ({}));
-        if (res.status === 409) {
-          setRebuildLock(true);
-          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
-          startRebuildPoll();
-          return;
-        }
-        if (body.docs) renderDocs(body.docs);
-        if (res.status === 207 || (body.errors && body.errors.length)) {
-          const msg = (body.errors || []).map((e) => e.message).filter(Boolean).join(" ") || "Upload failed";
-          setLibStatus(msg, "err");
-          return;
-        }
-        if (!res.ok) {
-          setLibStatus(body.detail || "Upload failed", "err");
-          return;
-        }
-        setLibStatus("Saved. Re-index to update search.");
-      } catch (err) {
-        fileInput.value = "";
-        setLibStatus("You're offline.", "err");
-      }
-    });
-
-    reindexBtn.addEventListener("click", async () => {
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
-      setRebuildLock(true);
-      setLibStatus("Rebuilding…");
-      try {
-        const res = await fetch("/api/reindex", { method: "POST" });
-        const body = await res.json().catch(() => ({}));
-        if (res.status === 409) {
-          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
-          startRebuildPoll();
-          return;
-        }
-        setRebuildLock(false);
-        await refreshLibrary();
-        if (!res.ok) setLibStatus(body.detail || "Re-index failed", "err");
-        else setLibStatus("Indexed " + body.num_chunks + " chunks.", "ok");
-      } catch (err) {
-        setLibStatus("You're offline.", "err");
-        startRebuildPoll();
-      }
-    });
-
-    window.addEventListener("offline", () => setLibStatus("You're offline.", "err"));
-
     reconnectBtn.addEventListener("click", connect);
     connect();
-    refreshLibrary();
+    checkRebuildOnLoad();
     input.focus();
 
     if ("serviceWorker" in navigator) {
