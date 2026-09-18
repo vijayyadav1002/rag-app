@@ -1,4 +1,4 @@
-const CACHE = "ask-northwind-v1";
+const CACHE = "ask-northwind-v2";
 const SHELL = [
   "/",
   "/manifest.webmanifest",
