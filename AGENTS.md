@@ -1,6 +1,6 @@
 # Ask the Company
 
-Minimal, framework-free RAG demo over synthetic Northwind Retail Co. documents (HR, IT, product FAQ, support runbook). Goal is to understand every pipeline stage, not wrap a library.
+Minimal, framework-light RAG demo over synthetic Northwind Retail Co. documents (HR, IT, product FAQ, support runbook). Goal is to understand every pipeline stage, not wrap a library.
 
 All code lives in `rag-demo/`. Run commands from that directory.
 
@@ -9,22 +9,22 @@ All code lives in `rag-demo/`. Run commands from that directory.
 | Command | Description |
 |---------|-------------|
 | `python3.12 -m venv .venv` | Create venv. Use 3.12, not 3.14 — `faiss-cpu` / `sentence-transformers` wheels lag on brand-new Python. |
-| `./.venv/bin/pip install -r requirements.txt` | Install deps |
+| `./.venv/bin/pip install -r requirements.txt` | Install deps (`python-multipart` is required for library uploads) |
 | `./.venv/bin/python build_index.py` | Chunk `docs/`, embed, persist FAISS index. Run once, and again whenever `docs/` changes. |
 | `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs an LLM provider; see Environment) |
-| `./.venv/bin/python server.py` | Browser UI at http://127.0.0.1:8000 (installable PWA, Library panel, Re-index; WebSocket stream; same LLM env as CLI) |
+| `./.venv/bin/python server.py` | Installable PWA at http://127.0.0.1:8000: Ask (WebSocket), Library (upload/delete `docs/`), Re-index (`build()` + `retrieve.reload()`). Same LLM env as CLI. |
 | `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
 | `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
 | `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
 
-There is no lint, format, test-runner, or deploy command.
+There is no lint, format, test-runner, or deploy command. Do not add pytest.
 
 ## Tech stack
 
 - Python 3.12, stdlib-style scripts (FastAPI only for the PWA/WebSocket UI; no LangChain/LlamaIndex)
 - `sentence-transformers` — `nomic-ai/nomic-embed-text-v1.5` bi-encoder (`search_document:` / `search_query:` prefixes); `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker
 - `faiss-cpu` — `IndexFlatIP` on L2-normalized vectors (cosine via inner product)
-- `anthropic` / `openai` — generation via `llm.py` (Anthropic Messages or OpenAI-compatible Chat Completions, including Ollama)
+- `anthropic` / `openai` — generation via `llm.py` (Anthropic Messages or OpenAI-compatible Chat Completions, including Ollama and xAI)
 - `numpy` — embedding arrays as `float32`
 - FastAPI + uvicorn + `python-multipart` — PWA/WebSocket UI and library uploads only
 
@@ -34,7 +34,7 @@ There is no lint, format, test-runner, or deploy command.
 docs/*.md
    │  chunk.py          heading-aware chunking + overlap
    ▼
-build_index.py          embed → FAISS + pickle metadata
+build_index.py          embed → FAISS + pickle metadata (atomic index/.tmp)
    ▼
 index/                  chunks.faiss, metadata.pkl, config.json
    │
@@ -51,14 +51,30 @@ server.py               PWA library writes docs/; Re-index → build() + retriev
 
 Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddings → FAISS → `RetrievedChunk` → numbered excerpts in the LLM prompt.
 
+The RAG brain is `chunk.py`, `build_index.build()`, `retrieve.py`, `generate.py`, `llm.py`, and `cli.py`. `server.py` transports, serves static files, locks, and calls `build()` / `reload()`. It does not retrieve or prompt itself.
+
+## Library and Re-index
+
+Two-stage ingest: upload/delete only touch `docs/` on disk. Search changes only after **Re-index** (`POST /api/reindex` → `build()` then `retrieve.reload()`). Same-name upload overwrites. Markdown only (`*.md`); no PDF, Word, or `.txt`. No auth.
+
+- Filenames are basenames; reject `..`, `/`, `\`, NUL, non-`.md`.
+- Max **1 MB** per file (`MAX_UPLOAD_BYTES = 1_000_000`), max **20 files** per request (`MAX_UPLOAD_FILES = 20`). Multipart field name is `files`.
+- While rebuilding: Ask, upload, and delete are locked (HTTP 409; WebSocket `{ "type": "error", "message": "Index is rebuilding. Try again when it finishes." }`). GET `/api/docs` and `/api/status` stay allowed.
+- Empty `docs/` → `IndexBuildError("No chunks to index.")` → HTTP 400; live `index/` untouched.
+- `build()` succeeds and `reload()` fails → HTTP 500 `"Index rebuilt on disk but failed to load. Restart the server."`
+
+Do not add auto-reindex on upload, a second HTML route, chat history, login, incremental FAISS, or filesystem watchers.
+
 ## Key files
 
 - `rag-demo/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`
-- `rag-demo/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`
-- `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting
+- `rag-demo/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config
+- `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`
 - `rag-demo/library.py` — safe markdown names; list/save/delete `docs/` (does not rebuild the index)
-- `rag-demo/static/manifest.webmanifest` — PWA install metadata
-- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v3`); never `/ws` or `/api/*`
+- `rag-demo/server.py` — FastAPI: `GET /`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
+- `rag-demo/static/index.html` — Ask UI + Library panel (same page) + service worker register
+- `rag-demo/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone)
+- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v3`); never `/ws` or `/api/*`. Bump the cache name when the shell changes.
 - `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `rag-demo/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
@@ -72,24 +88,28 @@ Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddi
 
 ## Coding conventions
 
-- Flat modules, not a package. Imports are `from chunk import …` / `from retrieve import …`. Run from `rag-demo/` (or put it on `PYTHONPATH`).
+- Flat modules, not a package. Imports are `from chunk import …` / `from retrieve import …` / `from library import …`. Run from `rag-demo/` (or put it on `PYTHONPATH`).
 - Each file is both an importable module and a `__main__` CLI.
 - Resolve paths from `Path(__file__).parent`, never from cwd.
 - Dataclasses + modern type hints (`list[Chunk]`, `float | None`). No Pydantic.
 - Module constants for tunables (`CHUNK_SIZE`, `EMBEDDING_MODEL`, `MODEL`).
 - Module-level docstring explains *why* (what the naive alternative gets wrong), not just what the file does.
-- Keep it framework-free. Do not add LangChain, an API server, or extra deps unless the task needs them.
+- Keep it framework-light. FastAPI is the existing PWA/WebSocket shell only. Do not add LangChain, Flask, a second HTML route, or extra deps unless the task needs them.
 - Synthetic docs: `# Title` then `##` sections. Chunking only splits on `## ` headings.
+- Do not commit uploaded probe files or `index/`.
 
 ## Testing
 
-- No unit tests. Accuracy is `eval.py` recall@k (did the expected `source_file` appear in the top-k chunks).
-- On this corpus (~52 chunks, 11 topically separated docs) vector search and rerank both report ~95% @1 and 100% @3/@5, but they fail *different* queries. Treat eval-set changes as the source of truth, not a single example query.
+- No unit tests and no pytest. Accuracy is `eval.py` recall@k (did the expected `source_file` appear in the top-k chunks).
+- Verify library/API changes with `python -c` or FastAPI `TestClient` against `server.py`, plus `eval.py` when retrieval or `build()` changes. Do not add a test runner.
+- On this corpus (~52 chunks, 11 topically separated docs) vector search and rerank both report ~95% @1 and 100% @3/@5, but they fail *different* queries. Treat eval-set changes as the source of truth, not a single example query. Fail a retrieval change if @3 drops below 100%.
 - `eval.py` does not call the LLM.
 
 ## Gotchas
 
 - Rebuild the index after any `docs/` edit (CLI `build_index.py` or the UI **Re-index**); retrieval reads whatever is on disk. A running server does not pick up a CLI rebuild until Re-index or restart.
+- Upload/delete change disk only. Ask can still cite a deleted file until Re-index; a new upload is invisible to search until Re-index.
 - Do not treat rerank as strictly better here. README documents a laptop-return query that vector search gets right and the reranker flips to `it_security_policy.md`.
 - Generation must not use outside knowledge; if chunks are empty or insufficient, say so.
-- Production follow-ups (hybrid BM25, query rewrite, metadata filters, RAGAS, citation verification) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked.
+- PWA caches the shell only. Ask, upload, and re-index still need the server. Offline copy is “You're offline.”; Ask still uses “Not connected. Use Reconnect.”
+- Production follow-ups (hybrid BM25, query rewrite, metadata filters, RAGAS, citation verification, auth, PDF, auto-reindex, chat history) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked.
