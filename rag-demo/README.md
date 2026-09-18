@@ -45,9 +45,10 @@ cp .env.example .env
 
 # Browser UI (same pipeline, streamed over a WebSocket)
 ./.venv/bin/python server.py
-# open http://127.0.0.1:8000
-# Installable (Add to Home Screen). The page has a Library panel;
-# Re-index rebuilds search from docs/. Upload does not change
+# open http://127.0.0.1:8000          Ask
+# open http://127.0.0.1:8000/library  Library (upload/delete/Re-index)
+# Installable (Add to Home Screen). Re-index lives on the Library
+# page and rebuilds search from docs/. Upload does not change
 # answers until Re-index.
 ```
 
@@ -195,14 +196,16 @@ being able to discuss:
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k evaluation harness |
 | `library.py` | Safe names, list/save/delete markdown in `docs/` (no rebuild) |
-| `server.py` | FastAPI WebSocket shell + library REST + Re-index lock (`python-multipart` for uploads) |
-| `static/index.html` | Ask UI + Library panel + PWA registration |
+| `server.py` | FastAPI WebSocket shell + library REST + Re-index lock + `GET /library` |
+| `static/index.html` | Ask UI + top nav + PWA registration |
+| `static/library.html` | Library UI: list, upload, delete, Re-index |
+| `static/app.css` | Shared theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
 | `static/sw.js` | Cache the UI shell only (not `/ws` or `/api/*`) |
 
 ## Web UI
 
-`server.py` serves `static/index.html` at `/` and a WebSocket at `/ws`. The page sends `{ "question": "..." }` and renders events in order: retrieving → source excerpts → tokens → done. The RAG path is still retrieve-then-rerank-then-generate; the socket is only transport. The page is a PWA: Add to Home Screen installs it; the service worker caches the shell, not answers.
+`server.py` serves Ask at `/` (`static/index.html`) and Library at `/library` (`static/library.html`), plus a WebSocket at `/ws`. Ask sends `{ "question": "..." }` and renders events in order: retrieving → source excerpts → tokens → done. The RAG path is still retrieve-then-rerank-then-generate; the socket is only transport. Both pages share a top nav and `static/app.css`. The app is a PWA: Add to Home Screen installs it (`start_url` `/`); the service worker caches the shell, not answers.
 
 ```bash
 ./.venv/bin/python server.py
@@ -212,6 +215,6 @@ Then open `http://127.0.0.1:8000`. `cli.py` is unchanged.
 
 ## Library and re-index
 
-The Library panel lists `docs/*.md`. Upload is markdown only (same filename overwrites). Delete removes the file from disk. There is no login — anyone who can open the app can change the corpus. Upload and delete do not change answers until you click **Re-index**, which rebuilds FAISS from every `docs/*.md` and hot-reloads search. While it rebuilds, Ask, upload, and delete are locked.
+Library is a separate page at `/library`. It lists `docs/*.md`. Upload is markdown only (same filename overwrites). Delete removes the file from disk. There is no login — anyone who can open the app can change the corpus. Upload and delete do not change answers until you click **Re-index** on that page, which rebuilds FAISS from every `docs/*.md` and hot-reloads search. While it rebuilds, Ask (via `/api/status` / the WebSocket error) and upload/delete are locked. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
 Auth, PDF/Word, chat history, auto-reindex on upload, and offline Q&A are out of scope.

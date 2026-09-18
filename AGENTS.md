@@ -12,7 +12,7 @@ All code lives in `rag-demo/`. Run commands from that directory.
 | `./.venv/bin/pip install -r requirements.txt` | Install deps (`python-multipart` is required for library uploads) |
 | `./.venv/bin/python build_index.py` | Chunk `docs/`, embed, persist FAISS index. Run once, and again whenever `docs/` changes. |
 | `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs an LLM provider; see Environment) |
-| `./.venv/bin/python server.py` | Installable PWA at http://127.0.0.1:8000: Ask (WebSocket), Library (upload/delete `docs/`), Re-index (`build()` + `retrieve.reload()`). Same LLM env as CLI. |
+| `./.venv/bin/python server.py` | Installable PWA at http://127.0.0.1:8000: Ask at `/` (WebSocket), Library at `/library` (upload/delete `docs/`), Re-index on the library page (`build()` + `retrieve.reload()`). Same LLM env as CLI. |
 | `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
 | `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
 | `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
@@ -63,7 +63,7 @@ Two-stage ingest: upload/delete only touch `docs/` on disk. Search changes only 
 - Empty `docs/` → `IndexBuildError("No chunks to index.")` → HTTP 400; live `index/` untouched.
 - `build()` succeeds and `reload()` fails → HTTP 500 `"Index rebuilt on disk but failed to load. Restart the server."`
 
-Do not add auto-reindex on upload, a second HTML route, chat history, login, incremental FAISS, or filesystem watchers.
+Library is `GET /library` (`library.html`), not a panel on Ask. The only extra HTML route is `/library`. Shell layout is `docs/superpowers/specs/2026-09-18-library-page-design.md` (it supersedes the same-page UI in `2026-09-18-pwa-library-reindex-design.md`; do not rewrite that file). Do not add auto-reindex on upload, chat history, login, incremental FAISS, filesystem watchers, or further HTML routes.
 
 ## Key files
 
@@ -71,10 +71,12 @@ Do not add auto-reindex on upload, a second HTML route, chat history, login, inc
 - `rag-demo/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config
 - `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`
 - `rag-demo/library.py` — safe markdown names; list/save/delete `docs/` (does not rebuild the index)
-- `rag-demo/server.py` — FastAPI: `GET /`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
-- `rag-demo/static/index.html` — Ask UI + Library panel (same page) + service worker register
-- `rag-demo/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone)
-- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v3`); never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `rag-demo/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
+- `rag-demo/static/index.html` — Ask UI + top nav + service worker register (no library panel)
+- `rag-demo/static/library.html` — Library UI: file list, upload, delete, Re-index
+- `rag-demo/static/app.css` — shared theme, header, nav
+- `rag-demo/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
+- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v4`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
 - `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `rag-demo/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
@@ -94,7 +96,7 @@ Do not add auto-reindex on upload, a second HTML route, chat history, login, inc
 - Dataclasses + modern type hints (`list[Chunk]`, `float | None`). No Pydantic.
 - Module constants for tunables (`CHUNK_SIZE`, `EMBEDDING_MODEL`, `MODEL`).
 - Module-level docstring explains *why* (what the naive alternative gets wrong), not just what the file does.
-- Keep it framework-light. FastAPI is the existing PWA/WebSocket shell only. Do not add LangChain, Flask, a second HTML route, or extra deps unless the task needs them.
+- Keep it framework-light. FastAPI is the existing PWA/WebSocket shell only. Do not add LangChain, Flask, extra HTML routes beyond `/library`, or extra deps unless the task needs them.
 - Synthetic docs: `# Title` then `##` sections. Chunking only splits on `## ` headings.
 - Do not commit uploaded probe files or `index/`.
 
@@ -111,5 +113,5 @@ Do not add auto-reindex on upload, a second HTML route, chat history, login, inc
 - Upload/delete change disk only. Ask can still cite a deleted file until Re-index; a new upload is invisible to search until Re-index.
 - Do not treat rerank as strictly better here. README documents a laptop-return query that vector search gets right and the reranker flips to `it_security_policy.md`.
 - Generation must not use outside knowledge; if chunks are empty or insufficient, say so.
-- PWA caches the shell only. Ask, upload, and re-index still need the server. Offline copy is “You're offline.”; Ask still uses “Not connected. Use Reconnect.”
+- PWA caches the shell only (`/`, `/library`, `/app.css`, manifest, sw, icons). Ask, upload, and re-index still need the server. Offline Library copy is “You're offline.”; Ask still uses “Not connected. Use Reconnect.”
 - Production follow-ups (hybrid BM25, query rewrite, metadata filters, RAGAS, citation verification, auth, PDF, auto-reindex, chat history) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked.
