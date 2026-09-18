@@ -156,6 +156,24 @@
     #conn.disconnected::before, #conn.error::before { background: var(--err); }
     #reconnect { display: none; }
     #reconnect.show { display: inline-block; }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 0.9rem;
+    }
+    .row:last-child { border-bottom: 0; }
+    .state { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    .state.not_indexed { color: var(--brass); }
+    .state.missing_on_disk { color: var(--err); }
+    .lib-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.75rem 0 0; align-items: center; }
+    #lib-status { min-height: 1.3em; margin: 0 0 0.5rem; color: var(--muted); font-size: 0.9rem; }
+    #lib-status.err { color: var(--err); }
+    #lib-status.ok { color: var(--ok); }
+    #doc-file { display: none; }
     @media (min-width: 640px) {
       #chunks { grid-template-columns: 1fr 1fr; }
     }
@@ -183,6 +201,17 @@
       <p id="answer"></p>
     </section>
 
+    <section class="panel" id="library">
+      <h2>Library</h2>
+      <p id="lib-status">Loading documents…</p>
+      <div id="doc-list"></div>
+      <div class="lib-actions">
+        <button type="button" id="upload">Upload .md</button>
+        <input id="doc-file" type="file" accept=".md,text/markdown" multiple />
+        <button type="button" id="reindex">Re-index</button>
+      </div>
+    </section>
+
     <footer>
       <span id="conn">disconnected</span>
       <button type="button" class="ghost" id="reconnect">Reconnect</button>
@@ -197,9 +226,20 @@
     const answerEl = document.getElementById("answer");
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
+    const libStatus = document.getElementById("lib-status");
+    const docList = document.getElementById("doc-list");
+    const uploadBtn = document.getElementById("upload");
+    const fileInput = document.getElementById("doc-file");
+    const reindexBtn = document.getElementById("reindex");
+    const STATE_LABEL = {
+      indexed: "indexed",
+      not_indexed: "not indexed",
+      missing_on_disk: "missing on disk",
+    };
 
     let ws = null;
     let answering = false;
+    let rebuilding = false;
 
     const STAGE = {
       retrieving: "Searching documents…",
@@ -214,8 +254,8 @@
 
     function setBusy(busy) {
       answering = busy;
-      input.disabled = busy;
-      askBtn.disabled = busy;
+      input.disabled = busy || rebuilding;
+      askBtn.disabled = busy || rebuilding;
     }
 
     function setStatus(text, kind) {
@@ -299,8 +339,126 @@
       ws.send(JSON.stringify({ question }));
     });
 
+    function isOffline() {
+      return !navigator.onLine;
+    }
+
+    function setLibStatus(text, kind) {
+      libStatus.textContent = text;
+      libStatus.className = kind || "";
+    }
+
+    function setRebuildLock(locked) {
+      rebuilding = locked;
+      input.disabled = locked || answering;
+      askBtn.disabled = locked || answering;
+      uploadBtn.disabled = locked;
+      reindexBtn.disabled = locked;
+      docList.querySelectorAll("button").forEach((b) => { b.disabled = locked; });
+      reindexBtn.textContent = locked ? "Rebuilding…" : "Re-index";
+    }
+
+    function renderDocs(docs) {
+      docList.replaceChildren();
+      if (!docs.length) {
+        const empty = document.createElement("p");
+        empty.className = "preview";
+        empty.textContent = "No markdown files in docs/.";
+        docList.appendChild(empty);
+        return;
+      }
+      for (const doc of docs) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const left = document.createElement("div");
+        left.textContent = doc.name;
+        const state = document.createElement("span");
+        state.className = "state " + doc.state;
+        state.textContent = STATE_LABEL[doc.state] || doc.state;
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "ghost";
+        del.textContent = "Delete";
+        del.disabled = rebuilding;
+        del.addEventListener("click", () => removeDoc(doc.name));
+        row.append(left, state, del);
+        if (doc.state === "missing_on_disk") del.hidden = true;
+        docList.appendChild(row);
+      }
+    }
+
+    async function refreshLibrary() {
+      if (isOffline()) {
+        setLibStatus("You're offline.", "err");
+        return;
+      }
+      const res = await fetch("/api/docs");
+      const body = await res.json();
+      setRebuildLock(!!body.rebuilding);
+      renderDocs(body.docs || []);
+      if (body.rebuilding) setLibStatus("Rebuilding…");
+      else if (!libStatus.classList.contains("err")) {
+        const n = body.num_chunks;
+        setLibStatus(n != null ? `${body.docs.length} files · ${n} chunks indexed` : "Ready");
+      }
+    }
+
+    async function removeDoc(name) {
+      if (!confirm(`Delete ${name} from disk? Re-index afterward to update search.`)) return;
+      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      const res = await fetch("/api/docs/" + encodeURIComponent(name), { method: "DELETE" });
+      if (res.status === 409) { setRebuildLock(true); setLibStatus("Index is rebuilding. Try again when it finishes.", "err"); return; }
+      if (!res.ok) { setLibStatus((await res.json()).detail || "Delete failed", "err"); return; }
+      const body = await res.json();
+      renderDocs(body.docs);
+      setLibStatus("Deleted " + name + ". Re-index to update search.");
+    }
+
+    uploadBtn.addEventListener("click", () => {
+      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      fileInput.click();
+    });
+    fileInput.addEventListener("change", async () => {
+      const files = fileInput.files;
+      if (!files || !files.length) return;
+      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      const fd = new FormData();
+      for (const f of files) fd.append("files", f);
+      const res = await fetch("/api/docs", { method: "POST", body: fd });
+      fileInput.value = "";
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 409) { setRebuildLock(true); setLibStatus("Index is rebuilding. Try again when it finishes.", "err"); return; }
+      if (body.docs) renderDocs(body.docs);
+      if (!res.ok && res.status !== 207) {
+        const msg = (body.errors && body.errors[0] && body.errors[0].message) || body.detail || "Upload failed";
+        setLibStatus(msg, "err");
+        return;
+      }
+      setLibStatus("Saved. Re-index to update search.");
+    });
+
+    reindexBtn.addEventListener("click", async () => {
+      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      setRebuildLock(true);
+      setLibStatus("Rebuilding…");
+      try {
+        const res = await fetch("/api/reindex", { method: "POST" });
+        const body = await res.json().catch(() => ({}));
+        setRebuildLock(false);
+        await refreshLibrary();
+        if (!res.ok) setLibStatus(body.detail || "Re-index failed", "err");
+        else setLibStatus("Indexed " + body.num_chunks + " chunks.", "ok");
+      } catch (err) {
+        setRebuildLock(false);
+        setLibStatus("You're offline.", "err");
+      }
+    });
+
+    window.addEventListener("offline", () => setLibStatus("You're offline.", "err"));
+
     reconnectBtn.addEventListener("click", connect);
     connect();
+    refreshLibrary();
     input.focus();
 
     if ("serviceWorker" in navigator) {
