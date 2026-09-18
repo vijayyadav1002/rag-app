@@ -358,6 +358,37 @@
       reindexBtn.textContent = locked ? "Rebuilding…" : "Re-index";
     }
 
+    let pollTimer = null;
+
+    function stopRebuildPoll() {
+      if (pollTimer === null) return;
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+
+    function startRebuildPoll() {
+      if (pollTimer !== null) return;
+      pollTimer = setTimeout(pollRebuild, 1000);
+    }
+
+    async function pollRebuild() {
+      pollTimer = null;
+      try {
+        const res = await fetch("/api/status");
+        const body = await res.json().catch(() => ({}));
+        if (body.rebuilding) {
+          setRebuildLock(true);
+          startRebuildPoll();
+          return;
+        }
+        setRebuildLock(false);
+        await refreshLibrary();
+      } catch (err) {
+        setLibStatus("You're offline.", "err");
+        startRebuildPoll();
+      }
+    }
+
     function renderDocs(docs) {
       docList.replaceChildren();
       if (!docs.length) {
@@ -392,26 +423,48 @@
         setLibStatus("You're offline.", "err");
         return;
       }
-      const res = await fetch("/api/docs");
-      const body = await res.json();
-      setRebuildLock(!!body.rebuilding);
-      renderDocs(body.docs || []);
-      if (body.rebuilding) setLibStatus("Rebuilding…");
-      else if (!libStatus.classList.contains("err")) {
+      try {
+        const res = await fetch("/api/docs");
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setLibStatus(body.detail || "Could not load documents.", "err");
+          return;
+        }
+        if (body.rebuilding) {
+          setRebuildLock(true);
+          renderDocs(body.docs || []);
+          setLibStatus("Rebuilding…");
+          startRebuildPoll();
+          return;
+        }
+        stopRebuildPoll();
+        setRebuildLock(false);
+        renderDocs(body.docs || []);
         const n = body.num_chunks;
         setLibStatus(n != null ? `${body.docs.length} files · ${n} chunks indexed` : "Ready");
+      } catch (err) {
+        setLibStatus("You're offline.", "err");
       }
     }
 
     async function removeDoc(name) {
       if (!confirm(`Delete ${name} from disk? Re-index afterward to update search.`)) return;
       if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
-      const res = await fetch("/api/docs/" + encodeURIComponent(name), { method: "DELETE" });
-      if (res.status === 409) { setRebuildLock(true); setLibStatus("Index is rebuilding. Try again when it finishes.", "err"); return; }
-      if (!res.ok) { setLibStatus((await res.json()).detail || "Delete failed", "err"); return; }
-      const body = await res.json();
-      renderDocs(body.docs);
-      setLibStatus("Deleted " + name + ". Re-index to update search.");
+      try {
+        const res = await fetch("/api/docs/" + encodeURIComponent(name), { method: "DELETE" });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          setRebuildLock(true);
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
+        if (!res.ok) { setLibStatus(body.detail || "Delete failed", "err"); return; }
+        renderDocs(body.docs);
+        setLibStatus("Deleted " + name + ". Re-index to update search.");
+      } catch (err) {
+        setLibStatus("You're offline.", "err");
+      }
     }
 
     uploadBtn.addEventListener("click", () => {
@@ -424,17 +477,31 @@
       if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
       const fd = new FormData();
       for (const f of files) fd.append("files", f);
-      const res = await fetch("/api/docs", { method: "POST", body: fd });
-      fileInput.value = "";
-      const body = await res.json().catch(() => ({}));
-      if (res.status === 409) { setRebuildLock(true); setLibStatus("Index is rebuilding. Try again when it finishes.", "err"); return; }
-      if (body.docs) renderDocs(body.docs);
-      if (!res.ok && res.status !== 207) {
-        const msg = (body.errors && body.errors[0] && body.errors[0].message) || body.detail || "Upload failed";
-        setLibStatus(msg, "err");
-        return;
+      try {
+        const res = await fetch("/api/docs", { method: "POST", body: fd });
+        fileInput.value = "";
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          setRebuildLock(true);
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
+        if (body.docs) renderDocs(body.docs);
+        if (res.status === 207 || (body.errors && body.errors.length)) {
+          const msg = (body.errors || []).map((e) => e.message).filter(Boolean).join(" ") || "Upload failed";
+          setLibStatus(msg, "err");
+          return;
+        }
+        if (!res.ok) {
+          setLibStatus(body.detail || "Upload failed", "err");
+          return;
+        }
+        setLibStatus("Saved. Re-index to update search.");
+      } catch (err) {
+        fileInput.value = "";
+        setLibStatus("You're offline.", "err");
       }
-      setLibStatus("Saved. Re-index to update search.");
     });
 
     reindexBtn.addEventListener("click", async () => {
@@ -444,13 +511,18 @@
       try {
         const res = await fetch("/api/reindex", { method: "POST" });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
         setRebuildLock(false);
         await refreshLibrary();
         if (!res.ok) setLibStatus(body.detail || "Re-index failed", "err");
         else setLibStatus("Indexed " + body.num_chunks + " chunks.", "ok");
       } catch (err) {
-        setRebuildLock(false);
         setLibStatus("You're offline.", "err");
+        startRebuildPoll();
       }
     });
 

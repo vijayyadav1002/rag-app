@@ -58,7 +58,7 @@ Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddi
 - `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting
 - `rag-demo/library.py` — safe markdown names; list/save/delete `docs/` (does not rebuild the index)
 - `rag-demo/static/manifest.webmanifest` — PWA install metadata
-- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v2`); never `/ws` or `/api/*`
+- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v3`); never `/ws` or `/api/*`
 - `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `rag-demo/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
