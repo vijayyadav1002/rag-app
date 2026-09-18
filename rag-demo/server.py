@@ -14,7 +14,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from generate import answer_stream
 from library import (
@@ -89,6 +89,40 @@ def api_status() -> dict:
 
 @app.get("/api/docs")
 def api_docs() -> dict:
+    return _docs_body()
+
+
+@app.post("/api/docs")
+async def api_upload(files: list[UploadFile] = File(default=[])):
+    if _rebuilding:
+        raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
+    if not files or len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(400, "Send between 1 and 20 markdown files.")
+    errors = []
+    for uf in files:
+        data = await uf.read()
+        try:
+            save_upload(uf.filename or "", data)
+        except UploadError as exc:
+            errors.append({"name": uf.filename or "", "message": str(exc)})
+    body = _docs_body()
+    if errors and len(errors) == len(files):
+        return JSONResponse(status_code=400, content={**body, "errors": errors})
+    if errors:
+        return JSONResponse(status_code=207, content={**body, "errors": errors})
+    return body
+
+
+@app.delete("/api/docs/{name}")
+def api_delete(name: str):
+    if _rebuilding:
+        raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
+    try:
+        delete_doc(name)
+    except UnsafeNameError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError:
+        raise HTTPException(404, "File not found.")
     return _docs_body()
 
 
