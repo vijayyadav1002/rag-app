@@ -15,6 +15,7 @@ accuracy lever in production RAG systems.
 
 import json
 import pickle
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,12 +32,12 @@ _embedder = None
 _reranker = None
 _index = None
 _chunks = None
+_state_lock = threading.Lock()
 
 
-def _load():
+def reload() -> None:
+    """Re-read FAISS + chunk metadata from disk. Keep models if already loaded."""
     global _embedder, _reranker, _index, _chunks
-    if _index is not None:
-        return
     config_path = INDEX_DIR / "config.json"
     if config_path.exists():
         with open(config_path) as f:
@@ -47,11 +48,21 @@ def _load():
                 f"Index was built with {indexed_model!r}, but retrieve.py "
                 f"uses {EMBEDDING_MODEL!r}. Re-run build_index.py."
             )
-    _embedder = SentenceTransformer(EMBEDDING_MODEL)
-    _reranker = CrossEncoder(RERANKER_MODEL)
-    _index = faiss.read_index(str(INDEX_DIR / "chunks.faiss"))
+    if _embedder is None:
+        _embedder = SentenceTransformer(EMBEDDING_MODEL)
+        _reranker = CrossEncoder(RERANKER_MODEL)
+    new_index = faiss.read_index(str(INDEX_DIR / "chunks.faiss"))
     with open(INDEX_DIR / "metadata.pkl", "rb") as f:
-        _chunks = pickle.load(f)
+        new_chunks = pickle.load(f)
+    with _state_lock:
+        _index = new_index
+        _chunks = new_chunks
+
+
+def _load():
+    if _index is not None:
+        return
+    reload()
 
 
 @dataclass
@@ -70,12 +81,15 @@ def vector_search(query: str, top_k: int = 20) -> list[RetrievedChunk]:
         [QUERY_PREFIX + query], normalize_embeddings=True
     )
     q_emb = np.asarray(q_emb, dtype="float32")
-    scores, indices = _index.search(q_emb, top_k)
+    with _state_lock:
+        index = _index
+        chunks = _chunks
+    scores, indices = index.search(q_emb, top_k)
     results = []
     for score, idx in zip(scores[0], indices[0]):
         if idx == -1:
             continue
-        c = _chunks[idx]
+        c = chunks[idx]
         results.append(
             RetrievedChunk(
                 chunk_id=c.chunk_id,
@@ -91,7 +105,9 @@ def rerank(query: str, candidates: list[RetrievedChunk]) -> list[RetrievedChunk]
     """Stage 2: precise reordering of a small candidate set."""
     _load()
     pairs = [[query, c.text] for c in candidates]
-    scores = _reranker.predict(pairs)
+    with _state_lock:
+        reranker = _reranker
+    scores = reranker.predict(pairs)
     for c, score in zip(candidates, scores):
         c.rerank_score = float(score)
     return sorted(candidates, key=lambda c: c.rerank_score, reverse=True)
