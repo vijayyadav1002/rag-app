@@ -144,10 +144,13 @@ async def api_reindex():
     if _rebuilding:
         raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
     _rebuilding = True
+    rebuild: asyncio.Task | None = None
     try:
         await _idle().wait()
+        # shield: a cancelled fetch must not abort the worker thread.
+        rebuild = asyncio.create_task(asyncio.to_thread(_rebuild_sync))
         try:
-            config = await asyncio.to_thread(_rebuild_sync)
+            config = await asyncio.shield(rebuild)
         except IndexBuildError as exc:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
@@ -161,6 +164,15 @@ async def api_reindex():
             "files": config["files"],
         }
     finally:
+        # Drop the lock only after the worker finishes, not on request cancel.
+        if rebuild is not None and not rebuild.done():
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+            try:
+                await rebuild
+            except Exception:
+                pass
         _rebuilding = False
 
 
