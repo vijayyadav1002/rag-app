@@ -14,7 +14,7 @@ You do not need prior AI or machine learning. Terms are defined the first time t
 4. Read **Part 5** with the matching `.py` file open. That is the deep file-by-file pass.
 5. Use **Part 8** as interview drills.
 
-Commands are always run from `rag-demo/`.
+Commands are always run from `src/`.
 
 ---
 
@@ -188,7 +188,7 @@ answer text + source list
 - `eval.py` → `retrieve` only. **No LLM.** That is deliberate.
 - `chunk.py` is imported by `build_index.py`. Query time does not re-chunk. It reads the pickle.
 
-Paths are always `Path(__file__).parent`, never “whatever directory you happened to `cd` into,” except that you still *run* the scripts from `rag-demo/` so imports like `from chunk import …` resolve.
+Paths are always `Path(__file__).parent`, never “whatever directory you happened to `cd` into,” except that you still *run* the scripts from `src/` so imports like `from chunk import …` resolve.
 
 ---
 

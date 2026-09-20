@@ -2,7 +2,7 @@
 
 Minimal, framework-light RAG demo over synthetic Northwind Retail Co. documents (HR, IT, product FAQ, support runbook). Goal is to understand every pipeline stage, not wrap a library.
 
-All code lives in `rag-demo/`. Run commands from that directory.
+All code lives in `src/`. Run commands from that directory.
 
 ## Commands
 
@@ -67,31 +67,31 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 
 ## Key files
 
-- `rag-demo/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`; `resolve_docs_dir()` / recursive `*.md`
-- `rag-demo/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config; reads `DOCS_DIR`
-- `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`
-- `rag-demo/library.py` — safe markdown names; list/save/delete under `DOCS_DIR` (does not rebuild the index)
-- `rag-demo/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
-- `rag-demo/static/index.html` — Ask UI + top nav + service worker register (no library panel)
-- `rag-demo/static/library.html` — Library UI: file list, upload, delete, Re-index
-- `rag-demo/static/app.css` — shared theme, header, nav
-- `rag-demo/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
-- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v5`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
-- `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
-- `rag-demo/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
-- `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
-- `rag-demo/docs/` — 11 synthetic `.md` files; company name is Northwind Retail Co.
+- `src/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`; `resolve_docs_dir()` / recursive `*.md`
+- `src/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config; reads `DOCS_DIR`
+- `src/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`
+- `src/library.py` — safe markdown names; list/save/delete under `DOCS_DIR` (does not rebuild the index)
+- `src/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
+- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel)
+- `src/static/library.html` — Library UI: file list, upload, delete, Re-index
+- `src/static/app.css` — shared theme, header, nav
+- `src/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
+- `src/static/sw.js` — caches the UI shell (`ask-northwind-v5`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `src/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
+- `src/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
+- `src/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
+- `src/docs/` — 11 synthetic `.md` files; company name is Northwind Retail Co.
 
 ## Environment
 
-- LLM generation (`cli.py` / `generate.py` / `server.py`): `LLM_PROVIDER` = `anthropic` \| `openai` \| `ollama` \| `xai`. Keys: `LLM_API_KEY`, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`. Unset provider + `ANTHROPIC_API_KEY` keeps the old Anthropic default. Copy `rag-demo/.env.example` → `rag-demo/.env` (gitignored; loaded by `llm.py` and `chunk.py`). Retrieval and eval run fully offline after models are cached.
-- Corpus path: `DOCS_DIR` (relative to `rag-demo/`, `~` expands, absolute allowed). Unset keeps `rag-demo/docs`. Restart and Re-index after changing. `index/` is not configurable.
+- LLM generation (`cli.py` / `generate.py` / `server.py`): `LLM_PROVIDER` = `anthropic` \| `openai` \| `ollama` \| `xai`. Keys: `LLM_API_KEY`, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`. Unset provider + `ANTHROPIC_API_KEY` keeps the old Anthropic default. Copy `src/.env.example` → `src/.env` (gitignored; loaded by `llm.py` and `chunk.py`). Retrieval and eval run fully offline after models are cached.
+- Corpus path: `DOCS_DIR` (relative to `src/`, `~` expands, absolute allowed). Unset keeps `src/docs`. Restart and Re-index after changing. `index/` is not configurable.
 - First retrieve/eval/index build downloads Hugging Face models; subsequent runs use the local cache.
 - `index/` and `.venv/` are gitignored. A committed tree has no index; rebuild locally.
 
 ## Coding conventions
 
-- Flat modules, not a package. Imports are `from chunk import …` / `from retrieve import …` / `from library import …`. Run from `rag-demo/` (or put it on `PYTHONPATH`).
+- Flat modules, not a package. Imports are `from chunk import …` / `from retrieve import …` / `from library import …`. Run from `src/` (or put it on `PYTHONPATH`).
 - Each file is both an importable module and a `__main__` CLI.
 - Resolve paths from `Path(__file__).parent`, never from cwd.
 - Dataclasses + modern type hints (`list[Chunk]`, `float | None`). No Pydantic.

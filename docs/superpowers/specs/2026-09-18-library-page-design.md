@@ -130,7 +130,7 @@ No new test runner. Do not add pytest.
 ## Docs to update during implementation
 
 - `AGENTS.md`: Library is `/library`, not a panel on Ask. Drop “do not add a second HTML route”; the only extra HTML route is `/library`.
-- `rag-demo/README.md`: describe Ask at `/` and Library at `/library`; Re-index is on the library page.
+- `src/README.md`: describe Ask at `/` and Library at `/library`; Re-index is on the library page.
 - This spec replaces the same-page UI section of `2026-09-18-pwa-library-reindex-design.md`. Do not rewrite that file in this work; point readers here for the shell layout.
 
 ## Out of scope

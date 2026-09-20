@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Commands run from `rag-demo/` with `./.venv/bin/python` (Python 3.12).
+- Commands run from `src/` with `./.venv/bin/python` (Python 3.12).
 - This repo has **no pytest / no test runner**. Verify with `python -c`, FastAPI `TestClient`, `eval.py`, and curl against `server.py`. Do not add pytest.
 - Markdown only: `*.md`. No PDF, Word, or `.txt`.
 - Upload/delete write `docs/` only. Search changes only after `POST /api/reindex`.
@@ -31,24 +31,24 @@
 
 | File | Responsibility |
 |------|----------------|
-| Create: `rag-demo/library.py` | Safe names, list/save/delete markdown, index-vs-disk `state` |
-| Modify: `rag-demo/build_index.py` | `IndexBuildError`; write `index/.tmp/` then replace; `indexed_at` + `files` in `config.json`; `build()` returns that config |
-| Modify: `rag-demo/retrieve.py` | `reload()`; `_state_lock` around `_index`/`_chunks` |
-| Modify: `rag-demo/server.py` | Static PWA routes, `/api/*`, rebuilding flag, wait for in-flight answers |
-| Modify: `rag-demo/requirements.txt` | `python-multipart` |
-| Modify: `rag-demo/static/index.html` | Manifest/SW registration, library panel, lock UI, offline copy |
-| Create: `rag-demo/static/manifest.webmanifest` | Install metadata |
-| Create: `rag-demo/static/sw.js` | Shell cache |
-| Create: `rag-demo/static/icons/icon-192.png`, `icon-512.png` | PWA icons |
-| Modify: `rag-demo/README.md`, `AGENTS.md` | How to use library + Re-index |
+| Create: `src/library.py` | Safe names, list/save/delete markdown, index-vs-disk `state` |
+| Modify: `src/build_index.py` | `IndexBuildError`; write `index/.tmp/` then replace; `indexed_at` + `files` in `config.json`; `build()` returns that config |
+| Modify: `src/retrieve.py` | `reload()`; `_state_lock` around `_index`/`_chunks` |
+| Modify: `src/server.py` | Static PWA routes, `/api/*`, rebuilding flag, wait for in-flight answers |
+| Modify: `src/requirements.txt` | `python-multipart` |
+| Modify: `src/static/index.html` | Manifest/SW registration, library panel, lock UI, offline copy |
+| Create: `src/static/manifest.webmanifest` | Install metadata |
+| Create: `src/static/sw.js` | Shell cache |
+| Create: `src/static/icons/icon-192.png`, `icon-512.png` | PWA icons |
+| Modify: `src/README.md`, `AGENTS.md` | How to use library + Re-index |
 
 ---
 
 ### Task 1: `library.py` — safe names and docs snapshot
 
 **Files:**
-- Create: `rag-demo/library.py`
-- Test: none (run `python -c` from `rag-demo/`)
+- Create: `src/library.py`
+- Test: none (run `python -c` from `src/`)
 
 **Interfaces:**
 - Consumes: `docs/*.md` on disk; `index/config.json` if present
@@ -212,7 +212,7 @@ Use this version, not the first sketch.
 - [ ] **Step 2: Run checks (expect pass if Step 1 used the corrected `safe_md_name`)**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from pathlib import Path
 import tempfile
@@ -260,7 +260,7 @@ Expected: `ok`
 - [ ] **Step 3: Commit**
 
 ```bash
-git add rag-demo/library.py
+git add src/library.py
 git commit -m "Add library helpers for markdown upload and corpus snapshot"
 ```
 
@@ -269,7 +269,7 @@ git commit -m "Add library helpers for markdown upload and corpus snapshot"
 ### Task 2: Atomic `build()` and richer `config.json`
 
 **Files:**
-- Modify: `rag-demo/build_index.py`
+- Modify: `src/build_index.py`
 
 **Interfaces:**
 - Consumes: `chunk.chunk_directory`, `library` not required
@@ -281,7 +281,7 @@ Write to `INDEX_DIR / ".tmp"`, then `Path.replace` each of the three artifacts o
 
 - [ ] **Step 1: Confirm current in-place write (baseline)**
 
-Read `rag-demo/build_index.py`. Note it writes directly into `INDEX_DIR`.
+Read `src/build_index.py`. Note it writes directly into `INDEX_DIR`.
 
 - [ ] **Step 2: Implement atomic `build()`**
 
@@ -365,7 +365,7 @@ Keep `if __name__ == "__main__": build()`.
 - [ ] **Step 3: Empty-docs failure must not wipe the live index**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 import json, shutil
 from pathlib import Path
@@ -396,12 +396,12 @@ print("ok empty")
 PY
 ```
 
-Expected: `ok empty`. If this fails because `docs/` was left empty, restore from `_docs_backup_probe` or git checkout `rag-demo/docs`.
+Expected: `ok empty`. If this fails because `docs/` was left empty, restore from `_docs_backup_probe` or git checkout `src/docs`.
 
 - [ ] **Step 4: Rebuild for real and check config keys + eval**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python build_index.py
 ./.venv/bin/python - <<'PY'
 import json
@@ -420,7 +420,7 @@ Expected: config ok; eval still ~95% @1 and 100% @3/@5 for both methods (do not 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add rag-demo/build_index.py
+git add src/build_index.py
 git commit -m "Write FAISS artifacts atomically and record indexed files"
 ```
 
@@ -429,7 +429,7 @@ git commit -m "Write FAISS artifacts atomically and record indexed files"
 ### Task 3: `retrieve.reload()` and index lock
 
 **Files:**
-- Modify: `rag-demo/retrieve.py`
+- Modify: `src/retrieve.py`
 
 **Interfaces:**
 - Consumes: `index/chunks.faiss`, `metadata.pkl`, `config.json` as today
@@ -507,7 +507,7 @@ In `rerank`, `_load()` then:
 - [ ] **Step 2: Verify reload sees a newly built index**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 import retrieve
 from retrieve import reload, vector_search
@@ -529,7 +529,7 @@ Expected: `reload ok <n>` with no exception. First run may download models.
 - [ ] **Step 3: Failed reload must keep the old index**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 import shutil
 from pathlib import Path
@@ -556,12 +556,12 @@ print("restored", retrieve._index.ntotal)
 PY
 ```
 
-Expected: `raised` some FAISS/error type; `restored <n>`. If this errors mid-way, `mv rag-demo/index/chunks.faiss.bak_probe rag-demo/index/chunks.faiss`.
+Expected: `raised` some FAISS/error type; `restored <n>`. If this errors mid-way, `mv src/index/chunks.faiss.bak_probe src/index/chunks.faiss`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add rag-demo/retrieve.py
+git add src/retrieve.py
 git commit -m "Hot-reload FAISS metadata without restarting the process"
 ```
 
@@ -570,8 +570,8 @@ git commit -m "Hot-reload FAISS metadata without restarting the process"
 ### Task 4: Status/docs GET + PWA static routes + rebuilding flag
 
 **Files:**
-- Modify: `rag-demo/server.py`
-- Modify: `rag-demo/requirements.txt` — add `python-multipart>=0.0.9` (needed in Task 5; add now so TestClient uploads work)
+- Modify: `src/server.py`
+- Modify: `src/requirements.txt` — add `python-multipart>=0.0.9` (needed in Task 5; add now so TestClient uploads work)
 
 **Interfaces:**
 - Consumes: `library.list_docs`, `library.index_meta`
@@ -587,7 +587,7 @@ Do **not** implement POST/DELETE/reindex yet. WebSocket Ask is unchanged except:
 - [ ] **Step 1: Install multipart and add GET routes**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/pip install 'python-multipart>=0.0.9'
 ```
 
@@ -694,7 +694,7 @@ Track in-flight answers around `_pump`:
 - [ ] **Step 2: Hit GET with TestClient**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -719,7 +719,7 @@ Expected: `get ok`. Lifespan still requires `index/chunks.faiss`.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add rag-demo/server.py rag-demo/requirements.txt
+git add src/server.py src/requirements.txt
 git commit -m "Add library status endpoints and PWA static routes"
 ```
 
@@ -728,7 +728,7 @@ git commit -m "Add library status endpoints and PWA static routes"
 ### Task 5: Upload and delete
 
 **Files:**
-- Modify: `rag-demo/server.py`
+- Modify: `src/server.py`
 
 **Interfaces:**
 - Consumes: `save_upload`, `delete_doc`, `UploadError`, `UnsafeNameError`, `MAX_UPLOAD_FILES`
@@ -788,7 +788,7 @@ def api_delete(name: str):
 - [ ] **Step 2: Verify with TestClient against a probe file, then delete it**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -813,12 +813,12 @@ print("upload ok")
 PY
 ```
 
-Expected: `upload ok`. Confirm `rag-demo/docs/zz_upload_probe.md` is gone.
+Expected: `upload ok`. Confirm `src/docs/zz_upload_probe.md` is gone.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add rag-demo/server.py
+git add src/server.py
 git commit -m "Accept markdown uploads and deletes without rebuilding the index"
 ```
 
@@ -827,7 +827,7 @@ git commit -m "Accept markdown uploads and deletes without rebuilding the index"
 ### Task 6: `POST /api/reindex` and the app lock
 
 **Files:**
-- Modify: `rag-demo/server.py`
+- Modify: `src/server.py`
 
 **Interfaces:**
 - Consumes: `build_index.build` → `dict`, `build_index.IndexBuildError`, `retrieve.reload`
@@ -889,7 +889,7 @@ async def api_reindex():
 Do **not** wait on a real encode for this check:
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 import time, threading
 from fastapi.testclient import TestClient
@@ -978,7 +978,7 @@ with TestClient(server.app) as c:
 Include this check. Then one real rebuild:
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -999,7 +999,7 @@ Expected: `reindex ok` (this re-embeds the corpus; can take a minute).
 - [ ] **Step 3: Commit**
 
 ```bash
-git add rag-demo/server.py
+git add src/server.py
 git commit -m "Rebuild the index from the API and block asks while it runs"
 ```
 
@@ -1008,11 +1008,11 @@ git commit -m "Rebuild the index from the API and block asks while it runs"
 ### Task 7: PWA shell assets
 
 **Files:**
-- Create: `rag-demo/static/manifest.webmanifest`
-- Create: `rag-demo/static/sw.js`
-- Create: `rag-demo/static/icons/icon-192.png`
-- Create: `rag-demo/static/icons/icon-512.png`
-- Modify: `rag-demo/static/index.html` (head + SW register only; library panel is Task 8)
+- Create: `src/static/manifest.webmanifest`
+- Create: `src/static/sw.js`
+- Create: `src/static/icons/icon-192.png`
+- Create: `src/static/icons/icon-512.png`
+- Modify: `src/static/index.html` (head + SW register only; library panel is Task 8)
 
 **Interfaces:**
 - Consumes: Task 4 static routes
@@ -1021,7 +1021,7 @@ git commit -m "Rebuild the index from the API and block asks while it runs"
 - [ ] **Step 1: Write icons (stdlib PNG, brass `#c9a36a` on `#141311`)**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 import struct, zlib
 from pathlib import Path
@@ -1142,7 +1142,7 @@ Before `</body>`, after the existing script (or at the end of the script):
 - [ ] **Step 5: Verify routes**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -1163,7 +1163,7 @@ Expected: `pwa files ok`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add rag-demo/static/manifest.webmanifest rag-demo/static/sw.js rag-demo/static/icons rag-demo/static/index.html
+git add src/static/manifest.webmanifest src/static/sw.js src/static/icons src/static/index.html
 git commit -m "Add an installable PWA shell that caches the UI only"
 ```
 
@@ -1172,7 +1172,7 @@ git commit -m "Add an installable PWA shell that caches the UI only"
 ### Task 8: Library panel UI
 
 **Files:**
-- Modify: `rag-demo/static/index.html`
+- Modify: `src/static/index.html`
 
 **Interfaces:**
 - Consumes: `GET /api/docs`, `GET /api/status`, `POST /api/docs`, `DELETE /api/docs/{name}`, `POST /api/reindex`
@@ -1407,7 +1407,7 @@ Call `refreshLibrary()` on load (in addition to `connect()`).
 - [ ] **Step 3: Smoke the HTML contains the new panel**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -1436,7 +1436,7 @@ Leave `docs/` without the probe file.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add rag-demo/static/index.html
+git add src/static/index.html
 git commit -m "Add a library panel and Re-index control to the PWA"
 ```
 
@@ -1445,7 +1445,7 @@ git commit -m "Add a library panel and Re-index control to the PWA"
 ### Task 9: Docs + eval regression
 
 **Files:**
-- Modify: `rag-demo/README.md`
+- Modify: `src/README.md`
 - Modify: `AGENTS.md`
 
 **Interfaces:**
@@ -1470,7 +1470,7 @@ Add a short “Library and re-index” subsection: markdown only, overwrite on s
 - [ ] **Step 3: Final eval**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python eval.py
 ```
 
@@ -1479,7 +1479,7 @@ Expected: script completes; @3/@5 remain 100%.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add rag-demo/README.md AGENTS.md
+git add src/README.md AGENTS.md
 git commit -m "Document the PWA library and Re-index flow"
 ```
 

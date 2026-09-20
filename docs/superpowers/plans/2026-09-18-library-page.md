@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Commands run from `rag-demo/` with `./.venv/bin/python` (Python 3.12).
+- Commands run from `src/` with `./.venv/bin/python` (Python 3.12).
 - This repo has **no pytest / no test runner**. Verify with `python -c`, FastAPI `TestClient`, `eval.py`, and a browser against `server.py`. Do not add pytest.
 - Two HTML pages, real URLs: `GET /` → `index.html`, `GET /library` → `library.html`. Unknown paths stay 404.
 - Shared top nav on both pages: **Ask** (`/`) and **Library** (`/library`). Current page is marked. **Ask** is how you return to the main page. No extra back button.
@@ -33,12 +33,12 @@
 
 | File | Responsibility |
 |------|----------------|
-| Create: `rag-demo/static/app.css` | Shared theme, header, nav, panels, buttons, `#doc-list` scroller |
-| Create: `rag-demo/static/library.html` | Library UI + nav; upload/delete/Re-index; no WebSocket |
-| Modify: `rag-demo/server.py` | Add `GET /library` and `GET /app.css` only |
-| Modify: `rag-demo/static/index.html` | Ask UI + nav; drop `#library`; rebuild lock from `/api/status` + WS error |
-| Modify: `rag-demo/static/sw.js` | Cache name `ask-northwind-v4`; precache `/library` and `/app.css` |
-| Modify: `AGENTS.md`, `rag-demo/README.md` | Ask at `/`, Library at `/library`; drop “no second HTML route” |
+| Create: `src/static/app.css` | Shared theme, header, nav, panels, buttons, `#doc-list` scroller |
+| Create: `src/static/library.html` | Library UI + nav; upload/delete/Re-index; no WebSocket |
+| Modify: `src/server.py` | Add `GET /library` and `GET /app.css` only |
+| Modify: `src/static/index.html` | Ask UI + nav; drop `#library`; rebuild lock from `/api/status` + WS error |
+| Modify: `src/static/sw.js` | Cache name `ask-northwind-v4`; precache `/library` and `/app.css` |
+| Modify: `AGENTS.md`, `src/README.md` | Ask at `/`, Library at `/library`; drop “no second HTML route” |
 | Unchanged | `chunk.py`, `build_index.py`, `retrieve.py`, `generate.py`, `llm.py`, `library.py`, `manifest.webmanifest`, `/api/*` handlers |
 
 ---
@@ -46,10 +46,10 @@
 ### Task 1: Shared stylesheet, `/library` page, and static routes
 
 **Files:**
-- Create: `rag-demo/static/app.css`
-- Create: `rag-demo/static/library.html`
-- Modify: `rag-demo/server.py` (add two routes next to `GET /`)
-- Modify: `rag-demo/static/index.html` (replace the inline `<style>` block with a stylesheet link; leave the library panel on Ask until Task 2)
+- Create: `src/static/app.css`
+- Create: `src/static/library.html`
+- Modify: `src/server.py` (add two routes next to `GET /`)
+- Modify: `src/static/index.html` (replace the inline `<style>` block with a stylesheet link; leave the library panel on Ask until Task 2)
 
 **Interfaces:**
 - Consumes: existing `STATIC_DIR`, `FileResponse`, current Ask CSS tokens (`--bg`, `--paper`, `--ink`, `--muted`, `--line`, `--brass`, `--brass-dim`, `--ok`, `--err`)
@@ -64,10 +64,10 @@ Do not add redirects for `/library/` or `/library.html`. Do not change `api_stat
 
 - [ ] **Step 1: Write the failing TestClient check**
 
-From `rag-demo/`:
+From `src/`:
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -92,7 +92,7 @@ PY
 
 Expected: FAIL. Today FastAPI has no `/app.css` or `/library`, so both GETs are **404**.
 
-- [ ] **Step 3: Create `rag-demo/static/app.css`**
+- [ ] **Step 3: Create `src/static/app.css`**
 
 Move every rule out of the current `index.html` `<style>` block. Add header/nav and the file-list scroller. Exact file:
 
@@ -301,7 +301,7 @@ footer {
 }
 ```
 
-- [ ] **Step 4: Add the two FileResponse routes in `rag-demo/server.py`**
+- [ ] **Step 4: Add the two FileResponse routes in `src/server.py`**
 
 Immediately after the existing `GET /` handler:
 
@@ -323,7 +323,7 @@ def app_css() -> FileResponse:
 
 Leave `/manifest.webmanifest`, `/sw.js`, `/icons/{name}`, `/api/*`, and `/ws` as they are.
 
-- [ ] **Step 5: Create `rag-demo/static/library.html`**
+- [ ] **Step 5: Create `src/static/library.html`**
 
 Full file. No Ask form, no `/ws`, no connection footer. Register the service worker. On load: `GET /api/status` then `GET /api/docs`. Poll `/api/status` every 1s only while `rebuilding` is true.
 
@@ -607,7 +607,7 @@ Copy rules that must stay exact:
 
 - [ ] **Step 6: Point Ask at the shared stylesheet**
 
-In `rag-demo/static/index.html`, delete the entire `<style>…</style>` block in `<head>` and replace it with:
+In `src/static/index.html`, delete the entire `<style>…</style>` block in `<head>` and replace it with:
 
 ```html
   <link rel="stylesheet" href="/app.css" />
@@ -618,7 +618,7 @@ Leave the rest of `index.html` (including `#library`) unchanged in this task.
 - [ ] **Step 7: Re-run the TestClient check and assert CSS + APIs**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -669,7 +669,7 @@ Expected: `library routes ok`
 - [ ] **Step 8: Commit**
 
 ```bash
-git add rag-demo/static/app.css rag-demo/static/library.html rag-demo/server.py rag-demo/static/index.html
+git add src/static/app.css src/static/library.html src/server.py src/static/index.html
 git commit -m "Serve a shared stylesheet and the /library page"
 ```
 
@@ -678,7 +678,7 @@ git commit -m "Serve a shared stylesheet and the /library page"
 ### Task 2: Ask page is Q&A only, with nav and rebuild lock
 
 **Files:**
-- Modify: `rag-demo/static/index.html` (replace the file)
+- Modify: `src/static/index.html` (replace the file)
 
 **Interfaces:**
 - Consumes: `GET /app.css`, `.site-header` / `nav a.active` from Task 1, `GET /api/status` `{rebuilding: bool, …}`, WebSocket error `{ "type": "error", "message": "Index is rebuilding. Try again when it finishes." }`
@@ -689,7 +689,7 @@ Ask still opens `/ws`, still replaces the previous turn, still registers `/sw.js
 - [ ] **Step 1: Write the failing TestClient check**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -715,7 +715,7 @@ PY
 
 Expected: FAIL on `id="library"` / `Re-index` / `Upload .md` still present in `GET /`, and/or missing `href="/" class="active"`.
 
-- [ ] **Step 3: Replace `rag-demo/static/index.html` with the Ask-only page**
+- [ ] **Step 3: Replace `src/static/index.html` with the Ask-only page**
 
 Full file. Product name is the existing `h1` serif, linking to `/`. It is not a third nav item. No second page title under the header. Keep the lede, form, pipeline, answer, footer.
 
@@ -960,7 +960,7 @@ Expected: `ask page ok`
 Start the server if it is not running:
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python server.py
 ```
 
@@ -979,7 +979,7 @@ If any of those fail, fix `index.html` / `library.html` / `app.css` and re-run S
 - [ ] **Step 6: Commit**
 
 ```bash
-git add rag-demo/static/index.html
+git add src/static/index.html
 git commit -m "Move library controls off the Ask page"
 ```
 
@@ -988,7 +988,7 @@ git commit -m "Move library controls off the Ask page"
 ### Task 3: Precache `/library` and `/app.css` (`ask-northwind-v4`)
 
 **Files:**
-- Modify: `rag-demo/static/sw.js`
+- Modify: `src/static/sw.js`
 
 **Interfaces:**
 - Consumes: `GET /`, `GET /library`, `GET /app.css` from Tasks 1–2
@@ -999,7 +999,7 @@ Do not change `static/manifest.webmanifest`. `start_url` remains `/`.
 - [ ] **Step 1: Write the failing TestClient check**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python - <<'PY'
 from fastapi.testclient import TestClient
 import server
@@ -1025,7 +1025,7 @@ PY
 
 Expected: FAIL. Current `CACHE` is `ask-northwind-v3` and `SHELL` does not list `/library` or `/app.css`.
 
-- [ ] **Step 3: Replace `rag-demo/static/sw.js`**
+- [ ] **Step 3: Replace `src/static/sw.js`**
 
 ```javascript
 const CACHE = "ask-northwind-v4";
@@ -1087,7 +1087,7 @@ With `./.venv/bin/python server.py` running at `http://127.0.0.1:8000`:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add rag-demo/static/sw.js
+git add src/static/sw.js
 git commit -m "Precache /library and /app.css in the PWA shell"
 ```
 
@@ -1097,7 +1097,7 @@ git commit -m "Precache /library and /app.css in the PWA shell"
 
 **Files:**
 - Modify: `AGENTS.md`
-- Modify: `rag-demo/README.md`
+- Modify: `src/README.md`
 
 **Interfaces:**
 - Consumes: Ask at `/`, Library at `/library`, Re-index on the library page, cache `ask-northwind-v4`
@@ -1128,12 +1128,12 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 **Key files** — replace the `server.py` / `index.html` / `sw.js` bullets with:
 
 ```
-- `rag-demo/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
-- `rag-demo/static/index.html` — Ask UI + top nav + service worker register (no library panel)
-- `rag-demo/static/library.html` — Library UI: file list, upload, delete, Re-index
-- `rag-demo/static/app.css` — shared theme, header, nav
-- `rag-demo/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
-- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v4`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `src/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
+- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel)
+- `src/static/library.html` — Library UI: file list, upload, delete, Re-index
+- `src/static/app.css` — shared theme, header, nav
+- `src/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
+- `src/static/sw.js` — caches the UI shell (`ask-northwind-v4`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
 ```
 
 **Coding conventions** — replace:
@@ -1154,7 +1154,7 @@ with:
 - PWA caches the shell only (`/`, `/library`, `/app.css`, manifest, sw, icons). Ask, upload, and re-index still need the server. Offline Library copy is “You're offline.”; Ask still uses “Not connected. Use Reconnect.”
 ```
 
-- [ ] **Step 2: Update `rag-demo/README.md`**
+- [ ] **Step 2: Update `src/README.md`**
 
 **Setup** — replace the `server.py` comment block:
 
@@ -1205,7 +1205,7 @@ Keep the out-of-scope sentence. Do not rewrite `docs/superpowers/specs/2026-09-1
 - [ ] **Step 3: Run eval.py (UI-only change; confirm retrieval did not drift)**
 
 ```bash
-cd rag-demo
+cd src
 ./.venv/bin/python eval.py
 ```
 
@@ -1214,7 +1214,7 @@ Expected: script completes; recall @3 and @5 stay **100%**. Fail this task if @3
 - [ ] **Step 4: Commit**
 
 ```bash
-git add AGENTS.md rag-demo/README.md
+git add AGENTS.md src/README.md
 git commit -m "Document Ask at / and Library at /library"
 ```
 

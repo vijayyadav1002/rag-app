@@ -25,9 +25,9 @@ _ROOT = Path(__file__).resolve().parent
 
 
 def resolve_docs_dir() -> Path:
-    """Corpus folder: DOCS_DIR env, else rag-demo/docs.
+    """Corpus folder: DOCS_DIR env, else src/docs.
 
-    Relative values are from rag-demo/, not cwd. ~ expands. Blank is unset.
+    Relative values are from src/, not cwd. ~ expands. Blank is unset.
     """
     raw = (os.environ.get("DOCS_DIR") or "").strip()
     if not raw:

@@ -29,7 +29,7 @@ cli.py                  — "python cli.py '<question>'"
 ## Setup
 
 ```bash
-cd rag-demo
+cd src
 python3.12 -m venv .venv        # 3.12, not 3.14 — wheel availability for
                                  # faiss-cpu/sentence-transformers lags on
                                  # brand-new Python versions
@@ -70,7 +70,7 @@ Copy `.env.example` to `.env` and uncomment one block. `.env` is gitignored;
 `llm.py` and `chunk.py` load it automatically (exported shell variables still win).
 
 Optional `DOCS_DIR` points the corpus (chunking, Library upload/delete, Re-index)
-at another markdown folder. Relative paths are from `rag-demo/`. Unset keeps
+at another markdown folder. Relative paths are from `src/`. Unset keeps
 `docs/`. Nested `*.md` files are indexed; Upload still writes a basename into
 that folder's root. Restart and Re-index after changing it. `index/` stays here.
 
