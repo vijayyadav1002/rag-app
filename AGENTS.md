@@ -1,4 +1,4 @@
-# Ask the Company
+# Rag-app
 
 Minimal, framework-light RAG demo over synthetic Northwind Retail Co. documents (HR, IT, product FAQ, support runbook). Goal is to understand every pipeline stage, not wrap a library.
 
