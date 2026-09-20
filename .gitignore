@@ -1,6 +1,6 @@
-.venv/
-index/
-__pycache__/
-*.pyc
-.env
-rag_docs/
+src/.venv
+src/index/
+src/__pycache__/
+src/*.pyc
+src/.env
+src/rag_docs/
