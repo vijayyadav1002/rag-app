@@ -76,7 +76,7 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 - `src/static/library.html` — Library UI: file list, upload, delete, Re-index
 - `src/static/app.css` — shared theme, header, nav
 - `src/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
-- `src/static/sw.js` — caches the UI shell (`ask-northwind-v5`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `src/static/sw.js` — caches the UI shell (`ask-northwind-v6`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
 - `src/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `src/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `src/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness

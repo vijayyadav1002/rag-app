@@ -36,7 +36,9 @@ Rules:
 - If the excerpts do not contain enough information to answer, say so explicitly \
   ("I don't have information about that in the available documents") instead of guessing.
 - Do not use outside knowledge, even if you're confident it's correct.
-- Be concise and direct."""
+- Be concise and direct.
+- Format in Markdown (short headings when useful, lists for steps or rules, \
+  **bold** for key numbers or names). Keep citation markers like [1] as plain text, not links."""
 
 
 def build_prompt(question: str, chunks: list[RetrievedChunk]) -> str:

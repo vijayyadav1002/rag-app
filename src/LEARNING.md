@@ -261,7 +261,7 @@ Question: How many PTO days do I get per year?
 
 **CLI:** `llm.complete(system, user)` waits for the full reply, then `cli.py` prints the text and `[1] pto_policy.md` etc.
 
-**UI:** `llm.stream(system, user)` yields text deltas. Each delta is a `token` event. The browser appends to the answer with `textContent` (plain text, so `[1]` stays visible and we do not interpret HTML).
+**UI:** `llm.stream(system, user)` yields text deltas. Each delta is a `token` event. The browser buffers the raw Markdown and re-renders a preview (`innerHTML` from a small client-side parser). Raw HTML is escaped; `[1]` citations stay visible as styled markers.
 
 A good answer sounds like: full-time employees accrue 15 days per year (1.25/month); 20 days after 5 years of tenure `[1]`. A small Ollama model may skip citations or hedge more; the prompt did not change.
 
@@ -554,7 +554,7 @@ One page: question box, pipeline panel, answer panel, connection footer.
 
 - Sends `{ "question": "..." }`.
 - On `sources`, builds numbered cards with `textContent` (no HTML injection from docs).
-- On `token`, appends to the answer as plain text, `white-space: pre-wrap`, **not Markdown**, so you see exactly what streamed, including `[1]`.
+- On `token`, appends to a Markdown buffer and re-renders `#answer` as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible.
 - No chat history. A new question clears the previous turn. That matches “single-shot RAG” — follow-up questions like “what about contractors?” would need query rewriting / history folding, which this demo does not implement (see Part 9).
 - Reconnect is manual. No retry loop.
 

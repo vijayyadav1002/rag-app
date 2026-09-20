@@ -149,10 +149,88 @@ button.ghost {
   font-size: 0.9rem;
 }
 #answer {
-  white-space: pre-wrap;
   min-height: 4rem;
   margin: 0;
   font-size: 1.02rem;
+}
+#answer > :first-child { margin-top: 0; }
+#answer > :last-child { margin-bottom: 0; }
+#answer p { margin: 0.65em 0; }
+#answer h1, #answer h2, #answer h3 {
+  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin: 1em 0 0.4em;
+  text-transform: none;
+  color: var(--ink);
+}
+#answer h1 { font-size: 1.35rem; }
+#answer h2 { font-size: 1.18rem; }
+#answer h3 { font-size: 1.05rem; color: var(--brass); }
+#answer ul, #answer ol {
+  margin: 0.5em 0 0.7em;
+  padding-left: 1.35rem;
+}
+#answer li { margin: 0.2em 0; }
+#answer li + li { margin-top: 0.28em; }
+#answer code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+  background: #141311;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.05em 0.35em;
+}
+#answer pre {
+  background: #141311;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.7rem 0.85rem;
+  overflow-x: auto;
+  margin: 0.7em 0;
+}
+#answer pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 0.86rem;
+}
+#answer a { color: var(--brass); }
+#answer a:hover { color: var(--ink); }
+#answer blockquote {
+  margin: 0.7em 0;
+  padding: 0.15em 0 0.15em 0.85em;
+  border-left: 3px solid var(--brass-dim);
+  color: var(--muted);
+}
+#answer hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1em 0;
+}
+#answer table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.7em 0;
+  font-size: 0.95rem;
+}
+#answer th, #answer td {
+  border: 1px solid var(--line);
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+}
+#answer th {
+  color: var(--brass);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+#answer .cite {
+  color: var(--brass);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 footer {
   display: flex;
