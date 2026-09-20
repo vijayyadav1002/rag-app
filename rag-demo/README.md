@@ -8,7 +8,7 @@ explain every stage of a RAG system, not just call a library.
 ## Pipeline
 
 ```
-docs/*.md               — Library can write these; Re-index calls build()
+DOCS_DIR (default docs/*.md) — Library can write these; Re-index calls build()
    │  chunk.py        — heading-aware chunking with overlap
    ▼
 build_index.py         — embed chunks (sentence-transformers), index (FAISS)
@@ -35,7 +35,7 @@ python3.12 -m venv .venv        # 3.12, not 3.14 — wheel availability for
                                  # brand-new Python versions
 ./.venv/bin/pip install -r requirements.txt
 
-./.venv/bin/python build_index.py     # run once, and again whenever docs/ changes
+./.venv/bin/python build_index.py     # run once, and again whenever the corpus changes
 
 # Generation: copy .env.example → .env and uncomment ONE provider block
 cp .env.example .env
@@ -48,8 +48,8 @@ cp .env.example .env
 # open http://127.0.0.1:8000          Ask
 # open http://127.0.0.1:8000/library  Library (upload/delete/Re-index)
 # Installable (Add to Home Screen). Re-index lives on the Library
-# page and rebuilds search from docs/. Upload does not change
-# answers until Re-index.
+# page and rebuilds search from DOCS_DIR (default docs/). Upload does
+# not change answers until Re-index.
 ```
 
 ## LLM providers
@@ -67,7 +67,12 @@ LM Studio, vLLM, Groq, OpenRouter, xAI, OpenAI itself).
 | `xai` | Chat Completions | `grok-4.5` | `XAI_API_KEY` or `LLM_API_KEY` | `https://api.x.ai/v1` |
 
 Copy `.env.example` to `.env` and uncomment one block. `.env` is gitignored;
-`llm.py` loads it automatically (exported shell variables still win).
+`llm.py` and `chunk.py` load it automatically (exported shell variables still win).
+
+Optional `DOCS_DIR` points the corpus (chunking, Library upload/delete, Re-index)
+at another markdown folder. Relative paths are from `rag-demo/`. Unset keeps
+`docs/`. Nested `*.md` files are indexed; Upload still writes a basename into
+that folder's root. Restart and Re-index after changing it. `index/` stays here.
 
 Override model with `LLM_MODEL` and endpoint with `LLM_BASE_URL`. Check
 what `llm.py` resolved:
@@ -187,7 +192,7 @@ being able to discuss:
 
 | File | Role |
 |---|---|
-| `docs/` | Synthetic source documents (the "company knowledge base") |
+| `docs/` | Default corpus (`DOCS_DIR`); synthetic Northwind markdown |
 | `chunk.py` | Heading-aware chunking with overlap |
 | `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`) |
 | `retrieve.py` | Vector search + cross-encoder rerank; `reload()` hot-swaps FAISS |
@@ -195,7 +200,7 @@ being able to discuss:
 | `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k evaluation harness |
-| `library.py` | Safe names, list/save/delete markdown in `docs/` (no rebuild) |
+| `library.py` | Safe names, list/save/delete markdown under `DOCS_DIR` (no rebuild) |
 | `server.py` | FastAPI WebSocket shell + library REST + Re-index lock + `GET /library` |
 | `static/index.html` | Ask UI + top nav + PWA registration |
 | `static/library.html` | Library UI: list, upload, delete, Re-index |
@@ -215,6 +220,6 @@ Then open `http://127.0.0.1:8000`. `cli.py` is unchanged.
 
 ## Library and re-index
 
-Library is a separate page at `/library`. It lists `docs/*.md`. Upload is markdown only (same filename overwrites). Delete removes the file from disk. There is no login — anyone who can open the app can change the corpus. Upload and delete do not change answers until you click **Re-index** on that page, which rebuilds FAISS from every `docs/*.md` and hot-reloads search. While it rebuilds, Ask (via `/api/status` / the WebSocket error) and upload/delete are locked. A long file list scrolls inside the list; Upload and Re-index stay on screen.
+Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename into the folder root; same filename overwrites). Delete removes the file from disk (nested files as relative paths). There is no login — anyone who can open the app can change the corpus. Upload and delete do not change answers until you click **Re-index** on that page, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask (via `/api/status` / the WebSocket error) and upload/delete are locked. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
 Auth, PDF/Word, chat history, auto-reindex on upload, and offline Q&A are out of scope.

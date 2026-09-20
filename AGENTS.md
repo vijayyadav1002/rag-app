@@ -10,9 +10,9 @@ All code lives in `rag-demo/`. Run commands from that directory.
 |---------|-------------|
 | `python3.12 -m venv .venv` | Create venv. Use 3.12, not 3.14 — `faiss-cpu` / `sentence-transformers` wheels lag on brand-new Python. |
 | `./.venv/bin/pip install -r requirements.txt` | Install deps (`python-multipart` is required for library uploads) |
-| `./.venv/bin/python build_index.py` | Chunk `docs/`, embed, persist FAISS index. Run once, and again whenever `docs/` changes. |
+| `./.venv/bin/python build_index.py` | Chunk `DOCS_DIR` (default `docs/`), embed, persist FAISS index. Run once, and again whenever the corpus changes. |
 | `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs an LLM provider; see Environment) |
-| `./.venv/bin/python server.py` | Installable PWA at http://127.0.0.1:8000: Ask at `/` (WebSocket), Library at `/library` (upload/delete `docs/`), Re-index on the library page (`build()` + `retrieve.reload()`). Same LLM env as CLI. |
+| `./.venv/bin/python server.py` | Installable PWA at http://127.0.0.1:8000: Ask at `/` (WebSocket), Library at `/library` (upload/delete under `DOCS_DIR`), Re-index on the library page (`build()` + `retrieve.reload()`). Same LLM env as CLI. |
 | `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
 | `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
 | `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
@@ -31,7 +31,7 @@ There is no lint, format, test-runner, or deploy command. Do not add pytest.
 ## Architecture
 
 ```
-docs/*.md
+DOCS_DIR (default docs/*.md, nested *.md included)
    │  chunk.py          heading-aware chunking + overlap
    ▼
 build_index.py          embed → FAISS + pickle metadata (atomic index/.tmp)
@@ -46,7 +46,7 @@ llm.py                  Anthropic or OpenAI-compatible LLM
    ▼
 cli.py                  argv question → printed answer + sources
 eval.py                 recall@k, vector-only vs reranked
-server.py               PWA library writes docs/; Re-index → build() + retrieve.reload()
+server.py               PWA library writes DOCS_DIR; Re-index → build() + retrieve.reload()
 ```
 
 Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddings → FAISS → `RetrievedChunk` → numbered excerpts in the LLM prompt.
@@ -55,28 +55,28 @@ The RAG brain is `chunk.py`, `build_index.build()`, `retrieve.py`, `generate.py`
 
 ## Library and Re-index
 
-Two-stage ingest: upload/delete only touch `docs/` on disk. Search changes only after **Re-index** (`POST /api/reindex` → `build()` then `retrieve.reload()`). Same-name upload overwrites. Markdown only (`*.md`); no PDF, Word, or `.txt`. No auth.
+Two-stage ingest: upload/delete only touch `DOCS_DIR` on disk (default `docs/`). Search changes only after **Re-index** (`POST /api/reindex` → `build()` then `retrieve.reload()`). Same-name upload overwrites. Markdown only (`*.md`); no PDF, Word, or `.txt`. No auth.
 
-- Filenames are basenames; reject `..`, `/`, `\`, NUL, non-`.md`.
+- Upload filenames are basenames; reject `..`, `/`, `\`, NUL, non-`.md`. List/delete use posix-relative paths (`hr/pto.md`) so nested files already on disk can be shown and removed; still reject `..`, absolute paths, and escapes outside `DOCS_DIR`.
 - Max **1 MB** per file (`MAX_UPLOAD_BYTES = 1_000_000`), max **20 files** per request (`MAX_UPLOAD_FILES = 20`). Multipart field name is `files`.
 - While rebuilding: Ask, upload, and delete are locked (HTTP 409; WebSocket `{ "type": "error", "message": "Index is rebuilding. Try again when it finishes." }`). GET `/api/docs` and `/api/status` stay allowed.
-- Empty `docs/` → `IndexBuildError("No chunks to index.")` → HTTP 400; live `index/` untouched.
+- Empty corpus → `IndexBuildError("No chunks to index.")` → HTTP 400; live `index/` untouched.
 - `build()` succeeds and `reload()` fails → HTTP 500 `"Index rebuilt on disk but failed to load. Restart the server."`
 
 Library is `GET /library` (`library.html`), not a panel on Ask. The only extra HTML route is `/library`. Shell layout is `docs/superpowers/specs/2026-09-18-library-page-design.md` (it supersedes the same-page UI in `2026-09-18-pwa-library-reindex-design.md`; do not rewrite that file). Do not add auto-reindex on upload, chat history, login, incremental FAISS, filesystem watchers, or further HTML routes.
 
 ## Key files
 
-- `rag-demo/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`
-- `rag-demo/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config
+- `rag-demo/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`; `resolve_docs_dir()` / recursive `*.md`
+- `rag-demo/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config; reads `DOCS_DIR`
 - `rag-demo/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`
-- `rag-demo/library.py` — safe markdown names; list/save/delete `docs/` (does not rebuild the index)
+- `rag-demo/library.py` — safe markdown names; list/save/delete under `DOCS_DIR` (does not rebuild the index)
 - `rag-demo/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
 - `rag-demo/static/index.html` — Ask UI + top nav + service worker register (no library panel)
 - `rag-demo/static/library.html` — Library UI: file list, upload, delete, Re-index
 - `rag-demo/static/app.css` — shared theme, header, nav
 - `rag-demo/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
-- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v4`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `rag-demo/static/sw.js` — caches the UI shell (`ask-northwind-v5`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
 - `rag-demo/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `rag-demo/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `rag-demo/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
@@ -84,7 +84,8 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 
 ## Environment
 
-- LLM generation (`cli.py` / `generate.py` / `server.py`): `LLM_PROVIDER` = `anthropic` \| `openai` \| `ollama` \| `xai`. Keys: `LLM_API_KEY`, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`. Unset provider + `ANTHROPIC_API_KEY` keeps the old Anthropic default. Copy `rag-demo/.env.example` → `rag-demo/.env` (gitignored; loaded by `llm.py`). Retrieval and eval run fully offline after models are cached.
+- LLM generation (`cli.py` / `generate.py` / `server.py`): `LLM_PROVIDER` = `anthropic` \| `openai` \| `ollama` \| `xai`. Keys: `LLM_API_KEY`, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`. Unset provider + `ANTHROPIC_API_KEY` keeps the old Anthropic default. Copy `rag-demo/.env.example` → `rag-demo/.env` (gitignored; loaded by `llm.py` and `chunk.py`). Retrieval and eval run fully offline after models are cached.
+- Corpus path: `DOCS_DIR` (relative to `rag-demo/`, `~` expands, absolute allowed). Unset keeps `rag-demo/docs`. Restart and Re-index after changing. `index/` is not configurable.
 - First retrieve/eval/index build downloads Hugging Face models; subsequent runs use the local cache.
 - `index/` and `.venv/` are gitignored. A committed tree has no index; rebuild locally.
 
@@ -109,7 +110,7 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 
 ## Gotchas
 
-- Rebuild the index after any `docs/` edit (CLI `build_index.py` or the UI **Re-index**); retrieval reads whatever is on disk. A running server does not pick up a CLI rebuild until Re-index or restart.
+- Rebuild the index after any corpus edit (CLI `build_index.py` or the UI **Re-index**); retrieval reads whatever is on disk. A running server does not pick up a CLI rebuild until Re-index or restart.
 - Upload/delete change disk only. Ask can still cite a deleted file until Re-index; a new upload is invisible to search until Re-index.
 - Do not treat rerank as strictly better here. README documents a laptop-return query that vector search gets right and the reranker flips to `it_security_policy.md`.
 - Generation must not use outside knowledge; if chunks are empty or insufficient, say so.

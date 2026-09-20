@@ -1,7 +1,7 @@
 """
 Embeds all chunks and builds a FAISS index, persisted to disk.
 
-Run this once (and again any time docs/ changes) before querying.
+Run this once (and again any time the corpus changes) before querying.
 Writes into index/.tmp and replaces the live artifacts only after a
 full successful encode — a crash mid-write must not truncate chunks.faiss.
 """
@@ -15,7 +15,7 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from chunk import chunk_directory
+from chunk import chunk_directory, resolve_docs_dir
 
 EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 DOCUMENT_PREFIX = "search_document: "
@@ -27,7 +27,7 @@ class IndexBuildError(Exception):
 
 
 def build() -> dict:
-    docs_dir = Path(__file__).parent / "docs"
+    docs_dir = resolve_docs_dir()
     chunks = chunk_directory(docs_dir)
     if not chunks:
         raise IndexBuildError("No chunks to index.")

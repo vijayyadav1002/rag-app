@@ -1,9 +1,10 @@
-"""Operate docs/ for the PWA library.
+"""Operate the corpus folder for the PWA library.
 
-Filenames are validated to block path traversal; only basenames ending in
-.md are accepted because the chunker only reads markdown. Upload and delete
-only touch markdown on disk. They do not rebuild FAISS — search still reads
-index/ until someone calls build() + reload().
+Upload accepts basenames only (no slashes) and writes into the DOCS_DIR
+root. Delete and list use posix-relative paths so nested files already on
+disk can be shown and removed. The chunker only reads markdown. Upload and
+delete only touch files on disk. They do not rebuild FAISS — search still
+reads index/ until someone calls build() + reload().
 """
 from __future__ import annotations
 
@@ -11,7 +12,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-DOCS_DIR = Path(__file__).parent / "docs"
+from chunk import markdown_paths, resolve_docs_dir
+
+DOCS_DIR = resolve_docs_dir()
 INDEX_DIR = Path(__file__).parent / "index"
 MAX_UPLOAD_BYTES = 1_000_000
 MAX_UPLOAD_FILES = 20
@@ -36,6 +39,21 @@ def safe_md_name(name: str) -> str:
     return base
 
 
+def safe_md_relpath(name: str) -> str:
+    """Relative corpus path for delete/list identity. Rejects traversal."""
+    if not name or "\x00" in name or "\\" in name:
+        raise UnsafeNameError("Unsafe filename.")
+    path = Path(name)
+    if path.is_absolute() or path.anchor:
+        raise UnsafeNameError("Unsafe filename.")
+    parts = path.parts
+    if not parts or any(part in (".", "..") or part.startswith(".") for part in parts):
+        raise UnsafeNameError("Unsafe filename.")
+    if not path.name.lower().endswith(".md") or len(path.name) < 4:
+        raise UnsafeNameError("Only .md filenames are allowed.")
+    return path.as_posix()
+
+
 def index_meta(index_dir: Path | None = None) -> dict:
     index_dir = index_dir or INDEX_DIR
     path = index_dir / "config.json"
@@ -58,14 +76,13 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
     meta = index_meta(index_dir)
     indexed = set(meta["files"])
     disk = {}
-    if docs_dir.exists():
-        for path in docs_dir.glob("*.md"):
-            st = path.stat()
-            disk[path.name] = {
-                "name": path.name,
-                "size": st.st_size,
-                "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-            }
+    for path, rel in markdown_paths(docs_dir):
+        st = path.stat()
+        disk[rel] = {
+            "name": rel,
+            "size": st.st_size,
+            "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+        }
     names = sorted(set(disk) | indexed)
     rows = []
     for name in names:
@@ -100,9 +117,13 @@ def save_upload(filename: str, data: bytes, docs_dir: Path | None = None) -> str
 
 
 def delete_doc(name: str, docs_dir: Path | None = None) -> None:
-    docs_dir = docs_dir or DOCS_DIR
-    safe = safe_md_name(name)
-    path = docs_dir / safe
+    root = (docs_dir or DOCS_DIR).resolve()
+    rel = safe_md_relpath(name)
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise UnsafeNameError("Unsafe filename.") from exc
     if not path.is_file():
-        raise FileNotFoundError(safe)
+        raise FileNotFoundError(rel)
     path.unlink()

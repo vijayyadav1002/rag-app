@@ -135,7 +135,7 @@ async def api_upload(files: list[UploadFile] = File(default=[])):
     return body
 
 
-@app.delete("/api/docs/{name}")
+@app.delete("/api/docs/{name:path}")
 def api_delete(name: str):
     if _rebuilding:
         raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
