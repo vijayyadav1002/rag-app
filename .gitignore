@@ -4,3 +4,4 @@ src/__pycache__/
 src/*.pyc
 src/.env
 src/rag_docs/
+src/review/

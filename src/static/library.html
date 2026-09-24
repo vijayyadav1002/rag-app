@@ -21,6 +21,22 @@
       </nav>
     </header>
 
+    <section class="panel" id="review-panel">
+      <h2>Review</h2>
+      <p id="review-status"></p>
+      <div id="review-list"></div>
+      <div id="editor" hidden>
+        <textarea id="draft" spellcheck="false"></textarea>
+        <div class="lib-actions">
+          <button type="button" id="format-draft">Format</button>
+          <button type="button" id="save-draft">Save draft</button>
+          <button type="button" id="approve-draft">Approve</button>
+          <button type="button" id="reload-live" class="ghost">Reload live file</button>
+        </div>
+        <p id="editor-status"></p>
+      </div>
+    </section>
+
     <section class="panel" id="library">
       <h2>Library</h2>
       <p id="lib-status">Loading documents…</p>
@@ -38,6 +54,15 @@
     const uploadBtn = document.getElementById("upload");
     const fileInput = document.getElementById("doc-file");
     const reindexBtn = document.getElementById("reindex");
+    const reviewStatus = document.getElementById("review-status");
+    const reviewList = document.getElementById("review-list");
+    const editor = document.getElementById("editor");
+    const draft = document.getElementById("draft");
+    const editorStatus = document.getElementById("editor-status");
+    const formatBtn = document.getElementById("format-draft");
+    const saveBtn = document.getElementById("save-draft");
+    const approveBtn = document.getElementById("approve-draft");
+    const reloadBtn = document.getElementById("reload-live");
     const STATE_LABEL = {
       indexed: "indexed",
       not_indexed: "not indexed",
@@ -45,6 +70,18 @@
     };
 
     let rebuilding = false;
+    let proposals = [];
+    let openTarget = null;
+
+    function encPath(name) {
+      return name.split("/").map(encodeURIComponent).join("/");
+    }
+
+    function detail(body, fallback) {
+      if (!body) return fallback;
+      if (typeof body.detail === "string") return body.detail;
+      return fallback;
+    }
 
     function isOffline() {
       return !navigator.onLine;
@@ -59,7 +96,12 @@
       rebuilding = locked;
       uploadBtn.disabled = locked;
       reindexBtn.disabled = locked;
+      formatBtn.disabled = locked;
+      saveBtn.disabled = locked;
+      approveBtn.disabled = locked;
+      reloadBtn.disabled = locked;
       docList.querySelectorAll("button").forEach((b) => { b.disabled = locked; });
+      reviewList.querySelectorAll("button").forEach((b) => { b.disabled = locked; });
       reindexBtn.textContent = locked ? "Rebuilding…" : "Re-index";
     }
 
@@ -88,7 +130,7 @@
           return;
         }
         setRebuildLock(false);
-        await refreshLibrary();
+        await refreshAll();
       } catch (err) {
         setLibStatus("You're offline.", "err");
         startRebuildPoll();
@@ -112,16 +154,111 @@
         const state = document.createElement("span");
         state.className = "state " + doc.state;
         state.textContent = STATE_LABEL[doc.state] || doc.state;
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "ghost";
+        edit.textContent = "Edit";
+        edit.disabled = rebuilding;
+        edit.addEventListener("click", () => editDoc(doc.name));
         const del = document.createElement("button");
         del.type = "button";
         del.className = "ghost";
         del.textContent = "Delete";
         del.disabled = rebuilding;
         del.addEventListener("click", () => removeDoc(doc.name));
-        row.append(left, state, del);
-        if (doc.state === "missing_on_disk") del.hidden = true;
+        if (doc.pending) {
+          const pending = document.createElement("span");
+          pending.className = "state pending";
+          pending.textContent = "pending";
+          row.append(left, state, pending, edit, del);
+        } else {
+          row.append(left, state, edit, del);
+        }
+        if (doc.state === "missing_on_disk") {
+          del.hidden = true;
+          edit.hidden = true;
+        }
         docList.appendChild(row);
       }
+    }
+
+    function renderReview(items, unreadable) {
+      proposals = items || [];
+      reviewList.replaceChildren();
+      if (unreadable) {
+        reviewStatus.textContent = "One record could not be read.";
+        reviewStatus.className = "err";
+      } else if (!proposals.length) {
+        reviewStatus.textContent = "";
+        reviewStatus.className = "";
+      } else {
+        reviewStatus.textContent = "";
+        reviewStatus.className = "";
+      }
+      if (!proposals.length) {
+        const empty = document.createElement("p");
+        empty.className = "preview";
+        empty.textContent = "No pending changes.";
+        reviewList.appendChild(empty);
+        return;
+      }
+      for (const item of proposals) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const left = document.createElement("div");
+        left.textContent = item.target;
+        const op = document.createElement("span");
+        op.className = "state";
+        op.textContent = item.op === "delete" ? "Delete" : "Update";
+        const origin = document.createElement("span");
+        origin.className = "state";
+        origin.textContent = item.origin === "ai" ? "Formatted" : "Hand edit";
+        row.append(left, op, origin);
+        if (item.format_error) {
+          const failed = document.createElement("span");
+          failed.className = "format-failed";
+          failed.textContent = "Formatting failed";
+          row.appendChild(failed);
+        }
+        if (item.op !== "delete") {
+          const edit = document.createElement("button");
+          edit.type = "button";
+          edit.className = "ghost";
+          edit.textContent = "Edit";
+          edit.disabled = rebuilding;
+          edit.addEventListener("click", () => openEditor(item));
+          row.appendChild(edit);
+        }
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.textContent = "Approve";
+        approve.disabled = rebuilding;
+        approve.addEventListener("click", () => approveProposal(item.target));
+        const reject = document.createElement("button");
+        reject.type = "button";
+        reject.className = "ghost";
+        reject.textContent = "Reject";
+        reject.disabled = rebuilding;
+        reject.addEventListener("click", () => rejectProposal(item.target));
+        row.append(approve, reject);
+        reviewList.appendChild(row);
+      }
+    }
+
+    function openEditor(item) {
+      openTarget = item.target;
+      draft.value = item.body || "";
+      editor.hidden = false;
+      editorStatus.textContent = item.format_error || "";
+      editorStatus.className = item.format_error ? "err" : "";
+      draft.focus();
+    }
+
+    function closeEditor() {
+      openTarget = null;
+      editor.hidden = true;
+      draft.value = "";
+      editorStatus.textContent = "";
     }
 
     async function refreshLibrary() {
@@ -153,11 +290,37 @@
       }
     }
 
+    async function refreshReview() {
+      if (isOffline()) {
+        reviewStatus.textContent = "You're offline.";
+        reviewStatus.className = "err";
+        return;
+      }
+      try {
+        const res = await fetch("/api/review");
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          reviewStatus.textContent = detail(body, "Could not load the queue.");
+          reviewStatus.className = "err";
+          return;
+        }
+        renderReview(body.proposals || [], body.unreadable || 0);
+      } catch (err) {
+        reviewStatus.textContent = "You're offline.";
+        reviewStatus.className = "err";
+      }
+    }
+
+    async function refreshAll() {
+      await refreshLibrary();
+      await refreshReview();
+    }
+
     async function removeDoc(name) {
-      if (!confirm(`Delete ${name} from disk? Re-index afterward to update search.`)) return;
+      if (!confirm(`Stage deletion of ${name}? It stays on disk and searchable until you approve it and re-index.`)) return;
       if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
       try {
-        const res = await fetch("/api/docs/" + encodeURIComponent(name), { method: "DELETE" });
+        const res = await fetch("/api/docs/" + encPath(name), { method: "DELETE" });
         const body = await res.json().catch(() => ({}));
         if (res.status === 409) {
           setRebuildLock(true);
@@ -165,13 +328,172 @@
           startRebuildPoll();
           return;
         }
-        if (!res.ok) { setLibStatus(body.detail || "Delete failed", "err"); return; }
+        if (!res.ok) { setLibStatus(detail(body, "Delete failed"), "err"); return; }
         renderDocs(body.docs);
-        setLibStatus("Deleted " + name + ". Re-index to update search.");
+        renderReview(body.proposals || [], body.unreadable || 0);
+        setLibStatus("Staged for review.");
       } catch (err) {
         setLibStatus("You're offline.", "err");
       }
     }
+
+    async function editDoc(name) {
+      const pending = proposals.find((item) => item.target === name);
+      if (pending && pending.op === "delete") {
+        reviewStatus.textContent = "Reject the pending delete before editing this file.";
+        reviewStatus.className = "err";
+        return;
+      }
+      if (pending) {
+        openEditor(pending);
+        return;
+      }
+      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      try {
+        const res = await fetch("/api/docs/" + encPath(name));
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setLibStatus(detail(body, "Could not open the file."), "err");
+          return;
+        }
+        openEditor({ target: name, body: body.body || "", format_error: null });
+      } catch (err) {
+        setLibStatus("You're offline.", "err");
+      }
+    }
+
+    async function putDraft() {
+      const res = await fetch("/api/review/" + encPath(openTarget), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: draft.value }),
+      });
+      const body = await res.json().catch(() => ({}));
+      return { res, body };
+    }
+
+    function showEditorError(res, body, fallback) {
+      if (res.status === 409 && detail(body, "") === "Index is rebuilding. Try again when it finishes.") {
+        setRebuildLock(true);
+        editorStatus.textContent = "Index is rebuilding. Try again when it finishes.";
+        editorStatus.className = "err";
+        startRebuildPoll();
+        return;
+      }
+      editorStatus.textContent = detail(body, fallback);
+      editorStatus.className = "err";
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      if (!openTarget) return;
+      if (isOffline()) { editorStatus.textContent = "You're offline."; editorStatus.className = "err"; return; }
+      try {
+        const { res, body } = await putDraft();
+        if (!res.ok) { showEditorError(res, body, "Save failed"); return; }
+        renderDocs(body.docs || []);
+        renderReview(body.proposals || [], body.unreadable || 0);
+        editorStatus.textContent = "Draft saved.";
+        editorStatus.className = "";
+      } catch (err) {
+        editorStatus.textContent = "You're offline.";
+        editorStatus.className = "err";
+      }
+    });
+
+    formatBtn.addEventListener("click", async () => {
+      if (!openTarget) return;
+      if (isOffline()) { editorStatus.textContent = "You're offline."; editorStatus.className = "err"; return; }
+      try {
+        const saved = await putDraft();
+        if (!saved.res.ok) { showEditorError(saved.res, saved.body, "Save failed"); return; }
+        const res = await fetch("/api/review/" + encPath(openTarget) + "/format", { method: "POST" });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) { showEditorError(res, body, "Formatting failed"); return; }
+        renderDocs(body.docs || []);
+        renderReview(body.proposals || [], body.unreadable || 0);
+        if (body.proposal) openEditor(body.proposal);
+        editorStatus.textContent = "Formatted. Approve to write the live file.";
+        editorStatus.className = "";
+      } catch (err) {
+        editorStatus.textContent = "You're offline.";
+        editorStatus.className = "err";
+      }
+    });
+
+    async function approveProposal(name) {
+      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      try {
+        if (openTarget === name && !editor.hidden) {
+          const saved = await putDraft();
+          if (!saved.res.ok) { showEditorError(saved.res, saved.body, "Save failed"); return; }
+        }
+        const res = await fetch("/api/review/" + encPath(name) + "/approve", { method: "POST" });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && detail(body, "").indexOf("rebuilding") !== -1) {
+          setRebuildLock(true);
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
+        if (!res.ok) {
+          if (openTarget === name) showEditorError(res, body, "Approve failed");
+          else setLibStatus(detail(body, "Approve failed"), "err");
+          return;
+        }
+        renderDocs(body.docs || []);
+        renderReview(body.proposals || [], body.unreadable || 0);
+        if (openTarget === name) closeEditor();
+        setLibStatus("Approved. Re-index to update search.", "ok");
+      } catch (err) {
+        setLibStatus("You're offline.", "err");
+      }
+    }
+
+    async function rejectProposal(name) {
+      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      try {
+        const res = await fetch("/api/review/" + encPath(name), { method: "DELETE" });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          setRebuildLock(true);
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
+        if (!res.ok) { setLibStatus(detail(body, "Reject failed"), "err"); return; }
+        renderDocs(body.docs || []);
+        renderReview(body.proposals || [], body.unreadable || 0);
+        if (openTarget === name) closeEditor();
+        setLibStatus("Rejected.");
+      } catch (err) {
+        setLibStatus("You're offline.", "err");
+      }
+    }
+
+    approveBtn.addEventListener("click", () => {
+      if (openTarget) approveProposal(openTarget);
+    });
+
+    reloadBtn.addEventListener("click", async () => {
+      if (!openTarget) return;
+      if (isOffline()) { editorStatus.textContent = "You're offline."; editorStatus.className = "err"; return; }
+      try {
+        const res = await fetch("/api/docs/" + encPath(openTarget));
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 404) {
+          editorStatus.textContent = "No live file yet.";
+          editorStatus.className = "err";
+          return;
+        }
+        if (!res.ok) { showEditorError(res, body, "Could not load the live file."); return; }
+        draft.value = body.body || "";
+        editorStatus.textContent = "Loaded the live file. Save draft to keep it.";
+        editorStatus.className = "";
+      } catch (err) {
+        editorStatus.textContent = "You're offline.";
+        editorStatus.className = "err";
+      }
+    });
 
     uploadBtn.addEventListener("click", () => {
       if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
@@ -194,16 +516,17 @@
           return;
         }
         if (body.docs) renderDocs(body.docs);
+        if (body.proposals) renderReview(body.proposals, body.unreadable || 0);
         if (res.status === 207 || (body.errors && body.errors.length)) {
           const msg = (body.errors || []).map((e) => e.message).filter(Boolean).join(" ") || "Upload failed";
           setLibStatus(msg, "err");
           return;
         }
         if (!res.ok) {
-          setLibStatus(body.detail || "Upload failed", "err");
+          setLibStatus(detail(body, "Upload failed"), "err");
           return;
         }
-        setLibStatus("Saved. Re-index to update search.");
+        setLibStatus("Staged for review.");
       } catch (err) {
         fileInput.value = "";
         setLibStatus("You're offline.", "err");
@@ -223,7 +546,7 @@
           return;
         }
         setRebuildLock(false);
-        await refreshLibrary();
+        await refreshAll();
         if (!res.ok) setLibStatus(body.detail || "Re-index failed", "err");
         else setLibStatus("Indexed " + body.num_chunks + " chunks.", "ok");
       } catch (err) {
@@ -232,11 +555,17 @@
       }
     });
 
-    window.addEventListener("offline", () => setLibStatus("You're offline.", "err"));
+    window.addEventListener("offline", () => {
+      setLibStatus("You're offline.", "err");
+      reviewStatus.textContent = "You're offline.";
+      reviewStatus.className = "err";
+    });
 
     async function init() {
       if (isOffline()) {
         setLibStatus("You're offline.", "err");
+        reviewStatus.textContent = "You're offline.";
+        reviewStatus.className = "err";
         return;
       }
       try {
@@ -250,7 +579,7 @@
       } catch (err) {
         setLibStatus("You're offline.", "err");
       }
-      await refreshLibrary();
+      await refreshAll();
     }
     init();
 

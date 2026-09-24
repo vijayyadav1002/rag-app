@@ -323,7 +323,8 @@
           card.className = "chunk";
           const meta = document.createElement("div");
           meta.className = "meta";
-          meta.textContent = `[${chunk.n}] ${chunk.source_file}`;
+          const kind = chunk.expanded ? "section" : "excerpt";
+          meta.textContent = `[${chunk.n}] ${chunk.source_file} · ${kind}`;
           const preview = document.createElement("div");
           preview.className = "preview";
           preview.textContent = chunk.preview;

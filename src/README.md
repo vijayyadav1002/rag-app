@@ -46,10 +46,10 @@ cp .env.example .env
 # Browser UI (same pipeline, streamed over a WebSocket)
 ./.venv/bin/python server.py
 # open http://127.0.0.1:8000          Ask
-# open http://127.0.0.1:8000/library  Library (upload/delete/Re-index)
+# open http://127.0.0.1:8000/library  Library (review queue, upload/delete/Re-index)
 # Installable (Add to Home Screen). Re-index lives on the Library
-# page and rebuilds search from DOCS_DIR (default docs/). Upload does
-# not change answers until Re-index.
+# page and rebuilds search from DOCS_DIR (default docs/). Upload stages
+# a proposal; Approve writes the file; Re-index updates answers.
 ```
 
 ## LLM providers
@@ -200,10 +200,12 @@ being able to discuss:
 | `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k evaluation harness |
-| `library.py` | Safe names, list/save/delete markdown under `DOCS_DIR` (no rebuild) |
-| `server.py` | FastAPI WebSocket shell + library REST + Re-index lock + `GET /library` |
+| `library.py` | Safe names, list/read/atomic write/delete under `DOCS_DIR` (no rebuild) |
+| `review.py` | Proposal JSON in `review/` until Approve |
+| `format_md.py` | LLM rewrite into `#` / `##` Markdown for the chunker |
+| `server.py` | FastAPI WebSocket shell + library REST + review queue + Re-index lock + `GET /library` |
 | `static/index.html` | Ask UI + top nav + PWA registration |
-| `static/library.html` | Library UI: list, upload, delete, Re-index |
+| `static/library.html` | Library UI: review queue, editor, list, upload, delete, Re-index |
 | `static/app.css` | Shared theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
 | `static/sw.js` | Cache the UI shell only (not `/ws` or `/api/*`) |
@@ -220,6 +222,6 @@ Then open `http://127.0.0.1:8000`. `cli.py` is unchanged.
 
 ## Library and re-index
 
-Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename into the folder root; same filename overwrites). Delete removes the file from disk (nested files as relative paths). There is no login — anyone who can open the app can change the corpus. Upload and delete do not change answers until you click **Re-index** on that page, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask (via `/api/status` / the WebSocket error) and upload/delete are locked. A long file list scrolls inside the list; Upload and Re-index stay on screen.
+Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Approve** writes or removes the live file. **Reject** drops the proposal. There is no login — anyone who can open the app can approve. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit sends its `##` section (up to 4,000 characters of body) into the prompt; embedding and rerank still use the 800-character window. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
 Auth, PDF/Word, chat history, auto-reindex on upload, and offline Q&A are out of scope.

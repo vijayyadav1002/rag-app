@@ -65,6 +65,10 @@ def _load():
     reload()
 
 
+RERANK_FLOOR = 0.0
+RERANK_MARGIN = 1.0
+
+
 @dataclass
 class RetrievedChunk:
     chunk_id: str
@@ -72,6 +76,9 @@ class RetrievedChunk:
     text: str
     vector_score: float
     rerank_score: float | None = None
+    heading: str = ""
+    section_text: str = ""
+    expanded: bool = False
 
 
 def vector_search(query: str, top_k: int = 20) -> list[RetrievedChunk]:
@@ -96,6 +103,8 @@ def vector_search(query: str, top_k: int = 20) -> list[RetrievedChunk]:
                 source_file=c.source_file,
                 text=c.text,
                 vector_score=float(score),
+                heading=getattr(c, "heading", "") or "",
+                section_text=getattr(c, "section_text", "") or "",
             )
         )
     return results
@@ -120,6 +129,53 @@ def retrieve(query: str, top_k: int = 4, candidate_pool: int = 20, use_reranker:
     return candidates[:top_k]
 
 
+def prompt_excerpts(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """Swap in section text for hits that sit with the top rerank score.
+
+    Ranking already happened on the 800-character window. This only changes
+    what the prompt is allowed to read. Vector-only results have no rerank
+    score and stay as windows, so eval recall is unchanged.
+    """
+    if not chunks or chunks[0].rerank_score is None:
+        return list(chunks)
+    top = float(chunks[0].rerank_score)
+    out: list[RetrievedChunk] = []
+    slot: dict[tuple[str, str], int] = {}
+    for chunk in chunks:
+        key = (chunk.source_file, chunk.heading or chunk.chunk_id)
+        qualifies = (
+            chunk.rerank_score is not None
+            and chunk.rerank_score >= RERANK_FLOOR
+            and chunk.rerank_score >= top - RERANK_MARGIN
+            and bool(chunk.section_text)
+        )
+        if qualifies:
+            excerpt = RetrievedChunk(
+                chunk_id=chunk.chunk_id,
+                source_file=chunk.source_file,
+                text=chunk.section_text,
+                vector_score=chunk.vector_score,
+                rerank_score=chunk.rerank_score,
+                heading=chunk.heading,
+                section_text=chunk.section_text,
+                expanded=True,
+            )
+            if key in slot:
+                if out[slot[key]].expanded:
+                    continue
+                out[slot[key]] = excerpt
+                continue
+            slot[key] = len(out)
+            out.append(excerpt)
+            continue
+        if key in slot and out[slot[key]].expanded:
+            continue
+        if key not in slot:
+            slot[key] = len(out)
+        out.append(chunk)
+    return out
+
+
 if __name__ == "__main__":
     import sys
 
@@ -132,6 +188,12 @@ if __name__ == "__main__":
         print(f"  {c.text[:120]}...")
 
     print("\n--- After rerank (top 4) ---")
-    for c in retrieve(query, top_k=4):
+    ranked = retrieve(query, top_k=4)
+    for c in ranked:
         print(f"[rerank {c.rerank_score:.3f} | vec {c.vector_score:.3f}] {c.source_file} :: {c.chunk_id}")
         print(f"  {c.text[:120]}...")
+
+    print("\n--- Prompt excerpts ---")
+    for c in prompt_excerpts(ranked):
+        kind = "section" if c.expanded else "excerpt"
+        print(f"[{kind} {len(c.text)} chars] {c.source_file} :: {c.chunk_id}")

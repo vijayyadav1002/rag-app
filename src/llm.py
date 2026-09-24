@@ -63,6 +63,10 @@ class LLMConfigError(Exception):
     """Missing provider/key/model — fix env vars, don't retry."""
 
 
+class LLMTruncatedError(Exception):
+    """The model stopped because it hit max_tokens."""
+
+
 @dataclass(frozen=True)
 class Settings:
     provider: str
@@ -116,11 +120,12 @@ def load_settings() -> Settings:
     )
 
 
-def complete(system: str, user: str) -> str:
+def complete(system: str, user: str, max_tokens: int | None = None) -> str:
     settings = load_settings()
+    limit = MAX_TOKENS if max_tokens is None else max_tokens
     if settings.driver == "anthropic":
-        return _anthropic_complete(settings, system, user)
-    return _openai_complete(settings, system, user)
+        return _anthropic_complete(settings, system, user, limit)
+    return _openai_complete(settings, system, user, limit)
 
 
 def stream(
@@ -148,13 +153,15 @@ def _openai_client(settings: Settings):
     return OpenAI(api_key=settings.api_key, base_url=settings.base_url)
 
 
-def _anthropic_complete(settings: Settings, system: str, user: str) -> str:
+def _anthropic_complete(settings: Settings, system: str, user: str, max_tokens: int) -> str:
     response = _anthropic_client(settings).messages.create(
         model=settings.model,
-        max_tokens=MAX_TOKENS,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
+    if response.stop_reason == "max_tokens":
+        raise LLMTruncatedError("Formatting hit the token limit.")
     return response.content[0].text
 
 
@@ -174,16 +181,19 @@ def _anthropic_stream(
                 yield text
 
 
-def _openai_complete(settings: Settings, system: str, user: str) -> str:
+def _openai_complete(settings: Settings, system: str, user: str, max_tokens: int) -> str:
     response = _openai_client(settings).chat.completions.create(
         model=settings.model,
-        max_tokens=MAX_TOKENS,
+        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     )
-    return response.choices[0].message.content or ""
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        raise LLMTruncatedError("Formatting hit the token limit.")
+    return choice.message.content or ""
 
 
 def _openai_stream(

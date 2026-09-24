@@ -46,7 +46,7 @@ llm.py                  Anthropic or OpenAI-compatible LLM
    ▼
 cli.py                  argv question → printed answer + sources
 eval.py                 recall@k, vector-only vs reranked
-server.py               PWA library writes DOCS_DIR; Re-index → build() + retrieve.reload()
+server.py               PWA review queue writes DOCS_DIR on Approve; Re-index → build() + retrieve.reload()
 ```
 
 Pipeline data flow: markdown docs → `Chunk` dataclasses → normalized embeddings → FAISS → `RetrievedChunk` → numbered excerpts in the LLM prompt.
@@ -55,11 +55,13 @@ The RAG brain is `chunk.py`, `build_index.build()`, `retrieve.py`, `generate.py`
 
 ## Library and Re-index
 
-Two-stage ingest: upload/delete only touch `DOCS_DIR` on disk (default `docs/`). Search changes only after **Re-index** (`POST /api/reindex` → `build()` then `retrieve.reload()`). Same-name upload overwrites. Markdown only (`*.md`); no PDF, Word, or `.txt`. No auth.
+Two-stage ingest: **Approve** writes `DOCS_DIR` (default `docs/`). Search changes only after **Re-index** (`POST /api/reindex` → `build()` then `retrieve.reload()`). Upload, edit, and delete stage a proposal in `src/review/` (gitignored, outside the corpus) until Approve. Markdown only (`*.md`); no PDF, Word, or `.txt`. No auth. The Approve button is the human gate.
 
-- Upload filenames are basenames; reject `..`, `/`, `\`, NUL, non-`.md`. List/delete use posix-relative paths (`hr/pto.md`) so nested files already on disk can be shown and removed; still reject `..`, absolute paths, and escapes outside `DOCS_DIR`.
-- Max **1 MB** per file (`MAX_UPLOAD_BYTES = 1_000_000`), max **20 files** per request (`MAX_UPLOAD_FILES = 20`). Multipart field name is `files`.
-- While rebuilding: Ask, upload, and delete are locked (HTTP 409; WebSocket `{ "type": "error", "message": "Index is rebuilding. Try again when it finishes." }`). GET `/api/docs` and `/api/status` stay allowed.
+- Upload filenames are basenames; reject `..`, `/`, `\`, NUL, non-`.md`, non-UTF-8. List/delete/review use posix-relative paths (`hr/pto.md`) so nested files already on disk can be shown and removed; still reject `..`, absolute paths, and escapes outside `DOCS_DIR` or `src/review/`.
+- Max **1 MB** per file (`MAX_UPLOAD_BYTES = 1_000_000`), max **20 files** per request (`MAX_UPLOAD_FILES = 20`). Multipart field name is `files`. One open proposal per path; a later submit replaces it.
+- Upload runs `format_md.format_markdown` (`FORMAT_MAX_TOKENS = 4096`). A failure stores the raw text as a hand edit. **Save draft** is the override and does not call the model.
+- While rebuilding: Ask, upload, delete, and review mutations are locked (HTTP 409; WebSocket `{ "type": "error", "message": "Index is rebuilding. Try again when it finishes." }`). GET `/api/docs`, GET `/api/review`, and `/api/status` stay allowed.
+- Relevant prompt text: after rerank, a hit expands when `rerank_score >= RERANK_FLOOR` (`0.0`) and `>= top - RERANK_MARGIN` (`1.0`). The prompt then gets `section_text` (heading plus up to `SECTION_PROMPT_MAX = 4000` body characters). Embedding and rerank still use the 800-character window. `eval.py` is unchanged by expansion.
 - Empty corpus → `IndexBuildError("No chunks to index.")` → HTTP 400; live `index/` untouched.
 - `build()` succeeds and `reload()` fails → HTTP 500 `"Index rebuilt on disk but failed to load. Restart the server."`
 
@@ -67,16 +69,18 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 
 ## Key files
 
-- `src/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`; `resolve_docs_dir()` / recursive `*.md`
+- `src/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`, `SECTION_PROMPT_MAX=4000`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`; `section_text` holds the prompt expansion; `resolve_docs_dir()` / recursive `*.md`
 - `src/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config; reads `DOCS_DIR`
-- `src/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`
-- `src/library.py` — safe markdown names; list/save/delete under `DOCS_DIR` (does not rebuild the index)
-- `src/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `POST /api/reindex`, `GET /api/status`, PWA static routes
-- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel)
-- `src/static/library.html` — Library UI: file list, upload, delete, Re-index
+- `src/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`; `prompt_excerpts()` applies `RERANK_FLOOR` / `RERANK_MARGIN`
+- `src/library.py` — safe markdown names; list/read/atomic write/delete under `DOCS_DIR` (does not rebuild the index)
+- `src/review.py` — proposal JSON under `src/review/`; stage, save draft, approve, reject
+- `src/format_md.py` — LLM rewrite to one `#` title and `##` sections; rejects a bad result
+- `src/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `GET/PUT/POST/DELETE /api/review`, `POST /api/reindex`, `GET /api/status`, PWA static routes
+- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel). Source meta says `section` or `excerpt`.
+- `src/static/library.html` — Library UI: review queue, editor, file list, upload, delete, Re-index
 - `src/static/app.css` — shared theme, header, nav
 - `src/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
-- `src/static/sw.js` — caches the UI shell (`ask-northwind-v6`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `src/static/sw.js` — caches the UI shell (`ask-northwind-v7`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
 - `src/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `src/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `src/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
@@ -111,7 +115,7 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 ## Gotchas
 
 - Rebuild the index after any corpus edit (CLI `build_index.py` or the UI **Re-index**); retrieval reads whatever is on disk. A running server does not pick up a CLI rebuild until Re-index or restart.
-- Upload/delete change disk only. Ask can still cite a deleted file until Re-index; a new upload is invisible to search until Re-index.
+- Approve writes the live file. Ask can still cite the previous index until Re-index; a staged upload is invisible to search until Approve and then Re-index.
 - Do not treat rerank as strictly better here. README documents a laptop-return query that vector search gets right and the reranker flips to `it_security_policy.md`.
 - Generation must not use outside knowledge; if chunks are empty or insufficient, say so.
 - PWA caches the shell only (`/`, `/library`, `/app.css`, manifest, sw, icons). Ask, upload, and re-index still need the server. Offline Library copy is “You're offline.”; Ask still uses “Not connected. Use Reconnect.”

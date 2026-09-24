@@ -116,7 +116,8 @@ def save_upload(filename: str, data: bytes, docs_dir: Path | None = None) -> str
     return name
 
 
-def delete_doc(name: str, docs_dir: Path | None = None) -> None:
+def live_path(name: str, docs_dir: Path | None = None) -> tuple[Path, str]:
+    """Resolved file and its posix-relative name. Rejects paths outside the corpus."""
     root = (docs_dir or DOCS_DIR).resolve()
     rel = safe_md_relpath(name)
     path = (root / rel).resolve()
@@ -124,6 +125,41 @@ def delete_doc(name: str, docs_dir: Path | None = None) -> None:
         path.relative_to(root)
     except ValueError as exc:
         raise UnsafeNameError("Unsafe filename.") from exc
+    return path, rel
+
+
+def file_mtime(path: Path) -> tuple[str | None, int | None]:
+    if not path.is_file():
+        return None, None
+    st = path.stat()
+    iso = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+    return iso, st.st_mtime_ns
+
+
+def read_doc(name: str, docs_dir: Path | None = None) -> dict:
+    path, rel = live_path(name, docs_dir)
+    if not path.is_file():
+        raise FileNotFoundError(rel)
+    iso, _ns = file_mtime(path)
+    return {"name": rel, "body": path.read_text(encoding="utf-8"), "mtime": iso}
+
+
+def write_doc(name: str, data: bytes, docs_dir: Path | None = None) -> str:
+    """Atomic replace. A crash before replace leaves the previous file in place."""
+    if not data:
+        raise UploadError("Empty file.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise UploadError("File larger than 1 MB.")
+    path, rel = live_path(name, docs_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+    return rel
+
+
+def delete_doc(name: str, docs_dir: Path | None = None) -> None:
+    path, rel = live_path(name, docs_dir)
     if not path.is_file():
         raise FileNotFoundError(rel)
     path.unlink()

@@ -21,7 +21,7 @@ from collections.abc import Iterator
 from threading import Event
 
 from llm import LLMConfigError, complete, load_settings, stream as llm_stream
-from retrieve import RetrievedChunk, retrieve
+from retrieve import RetrievedChunk, prompt_excerpts, retrieve
 
 PREVIEW_CHARS = 240
 NO_INFO = (
@@ -64,7 +64,7 @@ def _cancelled(cancel: Event | None) -> bool:
 
 
 def answer(question: str, top_k: int = 4) -> tuple[str, list[RetrievedChunk]]:
-    chunks = retrieve(question, top_k=top_k)
+    chunks = prompt_excerpts(retrieve(question, top_k=top_k))
     if not chunks:
         return NO_INFO, []
 
@@ -83,7 +83,7 @@ def answer_stream(
 ) -> Iterator[dict]:
     """Yield pipeline events: status → sources → token* → done (or error)."""
     yield {"type": "status", "stage": "retrieving"}
-    chunks = retrieve(question, top_k=top_k)
+    chunks = prompt_excerpts(retrieve(question, top_k=top_k))
     if _cancelled(cancel):
         return
 
@@ -94,6 +94,7 @@ def answer_stream(
                 "n": i + 1,
                 "source_file": c.source_file,
                 "preview": chunk_preview(c.text),
+                "expanded": c.expanded,
             }
             for i, c in enumerate(chunks)
         ],

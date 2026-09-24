@@ -21,6 +21,7 @@ load_dotenv(Path(__file__).parent / ".env")
 
 CHUNK_SIZE = 800  # target characters per chunk
 CHUNK_OVERLAP = 150  # characters of overlap between consecutive chunks
+SECTION_PROMPT_MAX = 4000  # body chars of a section sent when a hit is expanded
 _ROOT = Path(__file__).resolve().parent
 
 
@@ -44,6 +45,7 @@ class Chunk:
     source_file: str
     heading: str
     chunk_id: str
+    section_text: str = ""
 
 
 def _split_into_sections(text: str) -> list[tuple[str, str]]:
@@ -61,18 +63,30 @@ def _split_into_sections(text: str) -> list[tuple[str, str]]:
     return sections
 
 
-def _sliding_window(text: str, size: int, overlap: int) -> list[str]:
+def _window_spans(text: str, size: int, overlap: int) -> list[tuple[int, int]]:
     if len(text) <= size:
-        return [text]
-    chunks = []
+        return [(0, len(text))]
+    spans = []
     start = 0
     while start < len(text):
-        end = start + size
-        chunks.append(text[start:end])
+        end = min(start + size, len(text))
+        spans.append((start, end))
         if end >= len(text):
             break
         start = end - overlap
-    return chunks
+    return spans
+
+
+def _sliding_window(text: str, size: int, overlap: int) -> list[str]:
+    return [text[start:end] for start, end in _window_spans(text, size, overlap)]
+
+
+def _section_excerpt(body: str, window_start: int, limit: int = SECTION_PROMPT_MAX) -> str:
+    """Body slice that contains the matched window, capped for the prompt."""
+    if len(body) <= limit:
+        return body
+    start = min(max(0, window_start), len(body) - limit)
+    return body[start : start + limit]
 
 
 def markdown_paths(docs_dir: Path) -> list[tuple[Path, str]]:
@@ -113,16 +127,19 @@ def chunk_document(path: Path, *, source_file: str | None = None) -> list[Chunk]
     chunks = []
     for i, (heading, section_text) in enumerate(sections):
         full_heading = f"{doc_title} > {heading}" if heading else doc_title
-        pieces = _sliding_window(section_text, CHUNK_SIZE, CHUNK_OVERLAP)
-        for j, piece in enumerate(pieces):
+        spans = _window_spans(section_text, CHUNK_SIZE, CHUNK_OVERLAP)
+        for j, (start, end) in enumerate(spans):
+            piece = section_text[start:end]
             if not piece.strip():
                 continue
+            excerpt = _section_excerpt(section_text, start).strip()
             chunks.append(
                 Chunk(
                     text=f"{full_heading}\n{piece.strip()}",
                     source_file=rel,
                     heading=full_heading,
                     chunk_id=f"{id_stem}_{i}_{j}",
+                    section_text=f"{full_heading}\n{excerpt}",
                 )
             )
     return chunks
