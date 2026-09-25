@@ -4,7 +4,9 @@ Upload accepts basenames only (no slashes) and writes into the DOCS_DIR
 root. Delete and list use posix-relative paths so nested files already on
 disk can be shown and removed. The chunker only reads markdown. Upload and
 delete only touch files on disk. They do not rebuild FAISS — search still
-reads index/ until someone calls build() + reload().
+reads index/ until someone calls build() + reload(). List marks an indexed
+file `changed` when its mtime is newer than config.json `indexed_at`, so
+the pages can say the index is behind without rebuilding it.
 """
 from __future__ import annotations
 
@@ -71,10 +73,23 @@ def index_meta(index_dir: Path | None = None) -> dict:
     }
 
 
+def _parse_time(value: str | None) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> list[dict]:
     docs_dir = docs_dir or DOCS_DIR
     meta = index_meta(index_dir)
     indexed = set(meta["files"])
+    indexed_at = _parse_time(meta.get("indexed_at"))
     disk = {}
     for path, rel in markdown_paths(docs_dir):
         st = path.stat()
@@ -88,6 +103,14 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
     for name in names:
         if name in disk:
             state = "indexed" if name in indexed else "not_indexed"
+            mtime = _parse_time(disk[name]["mtime"])
+            if (
+                state == "indexed"
+                and indexed_at is not None
+                and mtime is not None
+                and mtime > indexed_at
+            ):
+                state = "changed"
             rows.append({**disk[name], "state": state})
         else:
             rows.append(

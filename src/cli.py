@@ -20,7 +20,9 @@ def main():
 
     print(f"\nQ: {question}\n")
     print(f"{text}\n")
-    print("--- Sources ---")
+    how = chunks[0].rank_source if chunks else "vector"
+    label = "reranker" if how == "rerank" else "vector search (reranker not confident)"
+    print(f"--- Sources ({label}) ---")
     for i, c in enumerate(chunks):
         print(f"[{i + 1}] {c.source_file}")
 

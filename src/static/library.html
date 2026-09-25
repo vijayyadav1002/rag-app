@@ -65,6 +65,7 @@
     const reloadBtn = document.getElementById("reload-live");
     const STATE_LABEL = {
       indexed: "indexed",
+      changed: "changed",
       not_indexed: "not indexed",
       missing_on_disk: "missing on disk",
     };
@@ -284,7 +285,10 @@
         setRebuildLock(false);
         renderDocs(body.docs || []);
         const n = body.num_chunks;
-        setLibStatus(n != null ? `${body.docs.length} files · ${n} chunks indexed` : "Ready");
+        const ahead = (body.docs || []).some((doc) => doc.state !== "indexed");
+        let line = n != null ? `${body.docs.length} files · ${n} chunks indexed` : "Ready";
+        if (ahead) line += " · Re-index to update search";
+        setLibStatus(line);
       } catch (err) {
         setLibStatus("You're offline.", "err");
       }

@@ -21,6 +21,7 @@
       </nav>
     </header>
     <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes.</p>
+    <p id="index-note" class="index-note" hidden></p>
 
     <form id="ask-form">
       <input id="question" type="text" autocomplete="off"
@@ -53,6 +54,7 @@
     const answerEl = document.getElementById("answer");
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
+    const indexNote = document.getElementById("index-note");
 
     let ws = null;
     let answering = false;
@@ -238,6 +240,20 @@
       statusEl.className = kind || "";
     }
 
+    function setIndexNote(stale) {
+      indexNote.replaceChildren();
+      if (!stale) {
+        indexNote.hidden = true;
+        return;
+      }
+      indexNote.hidden = false;
+      indexNote.append("The library has changed since the last Re-index. Answers still use the previous index. ");
+      const link = document.createElement("a");
+      link.href = "/library";
+      link.textContent = "Re-index on the Library page.";
+      indexNote.append(link);
+    }
+
     function setRebuildLock(locked) {
       rebuilding = locked;
       input.disabled = locked || answering;
@@ -263,13 +279,14 @@
       try {
         const res = await fetch("/api/status");
         const body = await res.json().catch(() => ({}));
+        setIndexNote(Boolean(body.stale));
         if (body.rebuilding) {
           setRebuildLock(true);
           startRebuildPoll();
           return;
         }
         setRebuildLock(false);
-        setStatus("Ready", "idle");
+        if (!answering) setStatus("Ready", "idle");
       } catch (err) {
         startRebuildPoll();
       }
@@ -279,6 +296,7 @@
       try {
         const res = await fetch("/api/status");
         const body = await res.json().catch(() => ({}));
+        setIndexNote(Boolean(body.stale));
         if (body.rebuilding) {
           setRebuildLock(true);
           startRebuildPoll();
@@ -318,6 +336,12 @@
           chunksEl.appendChild(empty);
           return;
         }
+        const note = document.createElement("p");
+        note.className = "preview";
+        note.textContent = event.ranking === "rerank"
+          ? "Ordered by the reranker."
+          : "Reranker scores were below 0, so these stay in vector-search order.";
+        chunksEl.appendChild(note);
         for (const chunk of event.chunks) {
           const card = document.createElement("article");
           card.className = "chunk";
@@ -373,6 +397,9 @@
     reconnectBtn.addEventListener("click", connect);
     connect();
     checkRebuildOnLoad();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") checkRebuildOnLoad();
+    });
     input.focus();
 
     if ("serviceWorker" in navigator) {

@@ -89,6 +89,7 @@ def answer_stream(
 
     yield {
         "type": "sources",
+        "ranking": chunks[0].rank_source if chunks else "vector",
         "chunks": [
             {
                 "n": i + 1,

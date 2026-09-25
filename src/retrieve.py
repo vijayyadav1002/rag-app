@@ -8,9 +8,15 @@ embedded independently, then compared by dot product). A cross-encoder
 looks at the query and each candidate document *together* in one forward
 pass, so it captures interactions a bi-encoder misses. It's too slow to run
 over the whole corpus, but running it over the top ~20 vector-search
-candidates to pick the true top-k is cheap and consistently improves
-precision. This two-stage retrieve-then-rerank pattern is the standard
-accuracy lever in production RAG systems.
+candidates to pick the true top-k is cheap and, when the model is actually
+confident, a real second opinion.
+
+Why the confidence gate: this MiniLM reranker emits an MS MARCO logit.
+sigmoid(0) is 0.5, so a best score below 0 means the model thinks the
+closest passage is probably not relevant. On this corpus that unconfident
+order is what swaps the laptop-return policy for the disk-encryption
+policy. Shipped retrieval keeps vector order in that case and still
+attaches the scores. It does not drop the neighbors.
 """
 
 import json
@@ -67,6 +73,8 @@ def _load():
 
 RERANK_FLOOR = 0.0
 RERANK_MARGIN = 1.0
+# MS MARCO logit. Below this, P(relevant) < 0.5, so rerank order is not trusted.
+RERANK_TRUST = 0.0
 
 
 @dataclass
@@ -79,6 +87,7 @@ class RetrievedChunk:
     heading: str = ""
     section_text: str = ""
     expanded: bool = False
+    rank_source: str = "vector"
 
 
 def vector_search(query: str, top_k: int = 20) -> list[RetrievedChunk]:
@@ -122,11 +131,33 @@ def rerank(query: str, candidates: list[RetrievedChunk]) -> list[RetrievedChunk]
     return sorted(candidates, key=lambda c: c.rerank_score, reverse=True)
 
 
-def retrieve(query: str, top_k: int = 4, candidate_pool: int = 20, use_reranker: bool = True) -> list[RetrievedChunk]:
+def retrieve(
+    query: str,
+    top_k: int = 4,
+    candidate_pool: int = 20,
+    use_reranker: bool = True,
+    trust_gate: bool = True,
+) -> list[RetrievedChunk]:
+    """Vector top-`candidate_pool`, optional rerank, then the trust gate.
+
+    `trust_gate=False` returns pure rerank order so eval can still show the
+    laptop-policy flip. The default restores vector order when the best
+    logit is below `RERANK_TRUST`.
+    """
     candidates = vector_search(query, top_k=candidate_pool)
-    if use_reranker:
-        candidates = rerank(query, candidates)
-    return candidates[:top_k]
+    if not use_reranker:
+        return candidates[:top_k]
+    ranked = rerank(query, candidates)
+    best = ranked[0].rerank_score if ranked else None
+    trusted = best is not None and best >= RERANK_TRUST
+    if trust_gate and not trusted:
+        ranked = sorted(ranked, key=lambda c: c.vector_score, reverse=True)
+        source = "vector"
+    else:
+        source = "rerank"
+    for chunk in ranked:
+        chunk.rank_source = source
+    return ranked[:top_k]
 
 
 def prompt_excerpts(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
@@ -136,9 +167,10 @@ def prompt_excerpts(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
     what the prompt is allowed to read. Vector-only results have no rerank
     score and stay as windows, so eval recall is unchanged.
     """
-    if not chunks or chunks[0].rerank_score is None:
+    scored = [c.rerank_score for c in chunks if c.rerank_score is not None]
+    if not chunks or not scored:
         return list(chunks)
-    top = float(chunks[0].rerank_score)
+    top = float(max(scored))
     out: list[RetrievedChunk] = []
     slot: dict[tuple[str, str], int] = {}
     for chunk in chunks:
@@ -159,6 +191,7 @@ def prompt_excerpts(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
                 heading=chunk.heading,
                 section_text=chunk.section_text,
                 expanded=True,
+                rank_source=chunk.rank_source,
             )
             if key in slot:
                 if out[slot[key]].expanded:
@@ -187,8 +220,16 @@ if __name__ == "__main__":
         print(f"[{c.vector_score:.3f}] {c.source_file} :: {c.chunk_id}")
         print(f"  {c.text[:120]}...")
 
-    print("\n--- After rerank (top 4) ---")
+    print("\n--- Rerank order, gate off (top 4) ---")
+    ungated = retrieve(query, top_k=4, trust_gate=False)
+    for c in ungated:
+        print(f"[rerank {c.rerank_score:.3f} | vec {c.vector_score:.3f}] {c.source_file} :: {c.chunk_id}")
+        print(f"  {c.text[:120]}...")
+
+    print("\n--- Shipped retrieve (top 4) ---")
     ranked = retrieve(query, top_k=4)
+    how = ranked[0].rank_source if ranked else "vector"
+    print(f"Order: {how}")
     for c in ranked:
         print(f"[rerank {c.rerank_score:.3f} | vec {c.vector_score:.3f}] {c.source_file} :: {c.chunk_id}")
         print(f"  {c.text[:120]}...")

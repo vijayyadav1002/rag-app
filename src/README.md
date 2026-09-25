@@ -17,7 +17,8 @@ index/                  — persisted vectors + metadata
    │
    │  query
    ▼
-retrieve.py             — vector search (top-20) → cross-encoder rerank (top-4)
+retrieve.py             — vector search (top-20) → cross-encoder rerank;
+                          keep that order only when the best logit is ≥ 0
    ▼
 generate.py             — grounded prompt + citations
    │
@@ -94,14 +95,20 @@ That is a model limit; the prompt is the same.
    section, and prefixes each chunk with its section heading so the chunk
    is self-describing out of context.
 
-2. **Two-stage retrieve-then-rerank** (`retrieve.py`). Stage 1 is a fast
-   bi-encoder vector search (query and document embedded independently,
-   compared by dot product) over the whole corpus, pulling the top 20
-   candidates. Stage 2 runs a cross-encoder over just those 20 — it looks
-   at the query and each candidate *together* in one forward pass, which
-   captures interactions a bi-encoder structurally can't, at a cost too
-   expensive to run over the full corpus. This retrieve-then-rerank
-   pattern is the standard accuracy lever in production RAG.
+2. **Two-stage retrieve-then-rerank, with a confidence gate**
+   (`retrieve.py`). Stage 1 is a fast bi-encoder vector search (query and
+   document embedded independently, compared by dot product) over the
+   whole corpus, pulling the top 20 candidates. Stage 2 runs a
+   cross-encoder over just those 20 — it looks at the query and each
+   candidate *together* in one forward pass, which captures interactions
+   a bi-encoder structurally can't, at a cost too expensive to run over
+   the full corpus. The MiniLM model emits an MS MARCO logit.
+   `sigmoid(0) = 0.5`, so a best score below `RERANK_TRUST` (`0.0`) means
+   the reranker thinks even its top passage is probably not relevant.
+   Shipped retrieval then keeps vector order and still records the
+   scores. It does not drop the neighbors. A confident positive score
+   still replaces vector order. That is the standard retrieve-then-rerank
+   pattern, plus the refusal to let an unconfident reorder win.
 
 3. **Grounded generation with forced citations** (`generate.py`). The
    prompt requires every claim to cite a source chunk number and
@@ -120,33 +127,36 @@ That is a model limit; the prompt is the same.
 
    Result on this corpus:
 
-   | k | vector search only | with reranker |
-   |---|---------------------|----------------|
-   | 1 | 95% | 95% |
-   | 3 | 100% | 100% |
-   | 5 | 100% | 100% |
+   | k | vector search only | rerank order (gate off) | shipped (confident rerank) |
+   |---|---------------------|--------------------------|----------------------------|
+   | 1 | 95% | 95% | 100% |
+   | 3 | 100% | 100% | 100% |
+   | 5 | 100% | 100% | 100% |
 
-   **Why the reranker doesn't move the headline number here, and why
-   that's an honest result worth understanding:** this corpus is small
-   (11 docs, 52 chunks) and topically well-separated, so a bi-encoder
-   already resolves most queries correctly — reranking's advantage grows
-   with corpus size and topical overlap between documents. More
-   interestingly, at k=1 the two methods get *different* queries wrong:
+   **Why ungated rerank does not move the headline number, and why the
+   gate does:** this corpus is small (11 policy docs, plus whatever else
+   is in `DOCS_DIR`) and topically well-separated, so a bi-encoder
+   already resolves most queries. At k=1 the two ungated methods get
+   *different* queries wrong:
 
    - "What happens if I don't return my laptop when I leave the company?"
      → vector search gets it right (`remote_work_equipment_policy.md`);
-     reranking flips it to `it_security_policy.md`, which mentions
-     "company laptops" in a different context (disk encryption) — a
-     lexical false-positive.
+     ungated rerank flips it to `it_security_policy.md`, which mentions
+     "company laptops" in a different context (disk encryption). The best
+     logit on that question is about -6, so the shipped gate keeps the
+     vector order.
    - "When do I need to enroll in health insurance as a new hire?" →
      vector search gets it wrong (`onboarding_guide.md`, which mentions
-     benefits enrollment only in passing); reranking correctly picks
-     `benefits_enrollment_guide.md`.
+     benefits enrollment only in passing); rerank correctly picks
+     `benefits_enrollment_guide.md` with a positive logit, so the gate
+     keeps the rerank order.
 
-   Net effect: zero change in the aggregate number, but a real change in
-   *which* queries fail. This is exactly why you evaluate retrieval
-   changes on a labeled set instead of eyeballing one or two example
-   queries — a single anecdote can point either direction.
+   Ungated, the aggregate @1 number does not move. The gate picks the
+   list whose model is willing to stand behind its top hit, and on this
+   set that is 20/20 at rank 1. `eval.py` still prints the ungated misses
+   so a single anecdote cannot hide the disagreement. Fail a retrieval
+   change if recall at 3 drops below 100%, or if the shipped column drops
+   below 100% at rank 1 on this set.
 
 ## What I'd add for a production version (interview talking points)
 
@@ -195,11 +205,11 @@ being able to discuss:
 | `docs/` | Default corpus (`DOCS_DIR`); synthetic Northwind markdown |
 | `chunk.py` | Heading-aware chunking with overlap |
 | `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`) |
-| `retrieve.py` | Vector search + cross-encoder rerank; `reload()` hot-swaps FAISS |
+| `retrieve.py` | Vector search + cross-encoder rerank; keep rerank order only when the best logit is ≥ 0; `reload()` hot-swaps FAISS |
 | `generate.py` | Prompt assembly + citations (`answer_stream` for the UI) |
 | `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
 | `cli.py` | Command-line entrypoint |
-| `eval.py` | Retrieval recall@k evaluation harness |
+| `eval.py` | Retrieval recall@k: vector, ungated rerank, and the shipped gate |
 | `library.py` | Safe names, list/read/atomic write/delete under `DOCS_DIR` (no rebuild) |
 | `review.py` | Proposal JSON in `review/` until Approve |
 | `format_md.py` | LLM rewrite into `#` / `##` Markdown for the chunker |
@@ -222,6 +232,6 @@ Then open `http://127.0.0.1:8000`. `cli.py` is unchanged.
 
 ## Library and re-index
 
-Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Approve** writes or removes the live file. **Reject** drops the proposal. There is no login — anyone who can open the app can approve. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit sends its `##` section (up to 4,000 characters of body) into the prompt; embedding and rerank still use the 800-character window. A long file list scrolls inside the list; Upload and Re-index stay on screen.
+Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Approve** writes or removes the live file. **Reject** drops the proposal. There is no login — anyone who can open the app can approve. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit sends its `##` section (up to 4,000 characters of body) into the prompt; embedding and rerank still use the 800-character window. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
 Auth, PDF/Word, chat history, auto-reindex on upload, and offline Q&A are out of scope.

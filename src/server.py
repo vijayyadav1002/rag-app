@@ -79,10 +79,12 @@ def _idle() -> asyncio.Event:
 
 def _status_body() -> dict:
     meta = index_meta()
+    docs = list_docs()
     return {
         "rebuilding": _rebuilding,
         "indexed_at": meta.get("indexed_at"),
         "num_chunks": meta.get("num_chunks"),
+        "stale": any(row["state"] != "indexed" for row in docs),
     }
 
 

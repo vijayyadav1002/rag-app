@@ -67,6 +67,12 @@ nav a.active {
   margin: 0 0 1.75rem;
   max-width: 40em;
 }
+.index-note {
+  color: var(--brass);
+  margin: -0.75rem 0 1.75rem;
+  max-width: 40em;
+}
+.index-note a { color: var(--brass); }
 form {
   display: flex;
   gap: 0.5rem;
@@ -265,7 +271,7 @@ footer {
 }
 .row:last-child { border-bottom: 0; }
 .state { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
-.state.not_indexed, .state.pending { color: var(--brass); }
+.state.not_indexed, .state.pending, .state.changed { color: var(--brass); }
 .state.missing_on_disk, .format-failed { color: var(--err); }
 #draft {
   width: 100%;

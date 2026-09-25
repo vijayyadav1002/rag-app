@@ -3,9 +3,11 @@ Tiny retrieval evaluation harness.
 
 This is the concrete "accuracy" story: a hand-labeled set of questions with
 a known correct source document, scored with recall@k (did the correct
-source appear anywhere in the top-k retrieved chunks?). We run it once with
-vector search alone and once with reranking enabled, so there's a real
-before/after number instead of a vibe.
+source appear anywhere in the top-k retrieved chunks?). Three columns:
+vector search alone, rerank order with the confidence gate off, and the
+shipped retrieve() that keeps rerank order only when the best logit is
+at least 0. The middle column exists so a rerank mistake stays visible
+after the gate fixes it.
 
 In a production system this set would be much larger and ideally sourced
 from real user queries / support tickets, and you'd also track precision
@@ -47,36 +49,59 @@ class EvalResult:
     recall_at_k: dict[int, float]
 
 
-def evaluate(use_reranker: bool, k_values=(1, 3, 5)) -> EvalResult:
+def evaluate(fetch, label: str, k_values=(1, 3, 5)) -> tuple[EvalResult, list[str]]:
     max_k = max(k_values)
     hits = {k: 0 for k in k_values}
+    misses_at_1: list[str] = []
 
     for query, expected_source in TEST_SET:
-        if use_reranker:
-            results = retrieve(query, top_k=max_k, candidate_pool=20, use_reranker=True)
-        else:
-            results = vector_search(query, top_k=max_k)
-
+        results = fetch(query, max_k)
         retrieved_sources = [r.source_file for r in results]
+        if expected_source not in retrieved_sources[:1]:
+            misses_at_1.append(query)
         for k in k_values:
             if expected_source in retrieved_sources[:k]:
                 hits[k] += 1
 
     n = len(TEST_SET)
-    return EvalResult(
-        label="with reranker" if use_reranker else "vector search only",
+    result = EvalResult(
+        label=label,
         recall_at_k={k: hits[k] / n for k in k_values},
     )
+    return result, misses_at_1
+
+
+def _vector(query: str, top_k: int):
+    return vector_search(query, top_k=top_k)
+
+
+def _rerank_order(query: str, top_k: int):
+    return retrieve(query, top_k=top_k, candidate_pool=20, use_reranker=True, trust_gate=False)
+
+
+def _confident(query: str, top_k: int):
+    return retrieve(query, top_k=top_k, candidate_pool=20, use_reranker=True, trust_gate=True)
 
 
 if __name__ == "__main__":
     print(f"Evaluating on {len(TEST_SET)} hand-labeled queries...\n")
 
-    baseline = evaluate(use_reranker=False)
-    reranked = evaluate(use_reranker=True)
+    columns = [
+        evaluate(_vector, "vector only"),
+        evaluate(_rerank_order, "rerank order"),
+        evaluate(_confident, "confident"),
+    ]
 
-    print(f"{'k':<4}{'vector only':<15}{'with rerank':<15}")
-    for k in baseline.recall_at_k:
-        v = baseline.recall_at_k[k]
-        r = reranked.recall_at_k[k]
-        print(f"{k:<4}{v:<15.0%}{r:<15.0%}")
+    print(f"{'k':<4}{'vector only':<16}{'rerank order':<16}{'confident':<16}")
+    for k in columns[0][0].recall_at_k:
+        cells = [f"{col.recall_at_k[k]:<16.0%}" for col, _misses in columns]
+        print(f"{k:<4}{''.join(cells)}")
+
+    print()
+    for col, misses in columns:
+        print(f"{col.label} misses @1:")
+        if not misses:
+            print("  (none)")
+            continue
+        for query in misses:
+            print(f"  - {query}")

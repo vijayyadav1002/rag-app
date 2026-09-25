@@ -13,9 +13,9 @@ All code lives in `src/`. Run commands from that directory.
 | `./.venv/bin/python build_index.py` | Chunk `DOCS_DIR` (default `docs/`), embed, persist FAISS index. Run once, and again whenever the corpus changes. |
 | `./.venv/bin/python cli.py "your question"` | End-to-end Q&A (needs an LLM provider; see Environment) |
 | `./.venv/bin/python server.py` | Installable PWA at http://127.0.0.1:8000: Ask at `/` (WebSocket), Library at `/library` (upload/delete under `DOCS_DIR`), Re-index on the library page (`build()` + `retrieve.reload()`). Same LLM env as CLI. |
-| `./.venv/bin/python eval.py` | Retrieval recall@k on 20 hand-labeled (question, source doc) pairs |
+| `./.venv/bin/python eval.py` | Retrieval recall@k: vector, ungated rerank, and the shipped confidence gate |
 | `./.venv/bin/python chunk.py` | Print chunk count and a sample of chunks |
-| `./.venv/bin/python retrieve.py "query"` | Vector search vs rerank, no LLM |
+| `./.venv/bin/python retrieve.py "query"` | Vector search, ungated rerank, and shipped order; no LLM |
 
 There is no lint, format, test-runner, or deploy command. Do not add pytest.
 
@@ -38,14 +38,15 @@ build_index.py          embed → FAISS + pickle metadata (atomic index/.tmp)
    ▼
 index/                  chunks.faiss, metadata.pkl, config.json
    │
-retrieve.py             top-20 vector search → cross-encoder rerank → top-4
+retrieve.py             top-20 vector search → cross-encoder rerank;
+                        keep that order only when the best logit is ≥ 0, else vector order → top-4
    ▼
 generate.py             grounded prompt + citations
    ▼
 llm.py                  Anthropic or OpenAI-compatible LLM
    ▼
 cli.py                  argv question → printed answer + sources
-eval.py                 recall@k, vector-only vs reranked
+eval.py                 recall@k: vector, ungated rerank, confident rerank
 server.py               PWA review queue writes DOCS_DIR on Approve; Re-index → build() + retrieve.reload()
 ```
 
@@ -61,7 +62,9 @@ Two-stage ingest: **Approve** writes `DOCS_DIR` (default `docs/`). Search change
 - Max **1 MB** per file (`MAX_UPLOAD_BYTES = 1_000_000`), max **20 files** per request (`MAX_UPLOAD_FILES = 20`). Multipart field name is `files`. One open proposal per path; a later submit replaces it.
 - Upload runs `format_md.format_markdown` (`FORMAT_MAX_TOKENS = 4096`). A failure stores the raw text as a hand edit. **Save draft** is the override and does not call the model.
 - While rebuilding: Ask, upload, delete, and review mutations are locked (HTTP 409; WebSocket `{ "type": "error", "message": "Index is rebuilding. Try again when it finishes." }`). GET `/api/docs`, GET `/api/review`, and `/api/status` stay allowed.
-- Relevant prompt text: after rerank, a hit expands when `rerank_score >= RERANK_FLOOR` (`0.0`) and `>= top - RERANK_MARGIN` (`1.0`). The prompt then gets `section_text` (heading plus up to `SECTION_PROMPT_MAX = 4000` body characters). Embedding and rerank still use the 800-character window. `eval.py` is unchanged by expansion.
+- Relevant prompt text: after retrieval, a hit expands when `rerank_score >= RERANK_FLOOR` (`0.0`) and `>= best - RERANK_MARGIN` (`1.0`). The prompt then gets `section_text` (heading plus up to `SECTION_PROMPT_MAX = 4000` body characters). Embedding and rerank still use the 800-character window. The best logit is the max score on the returned chunks, so a vector-ordered result still expands off the rerank scores. `eval.py` calls `retrieve()` directly and does not expand.
+- `retrieve()` keeps rerank order only when the best logit is `>= RERANK_TRUST` (`0.0`). Below that it restores vector order and sets `rank_source` to `vector`. Scores stay attached. Neighbors are not dropped.
+- A live file already in `config.json` `files` whose mtime is after `indexed_at` is `changed`. `GET /api/status` sets `stale` when any row is not `indexed`. Ask shows that note. Search still updates only on Re-index.
 - Empty corpus → `IndexBuildError("No chunks to index.")` → HTTP 400; live `index/` untouched.
 - `build()` succeeds and `reload()` fails → HTTP 500 `"Index rebuilt on disk but failed to load. Restart the server."`
 
@@ -71,19 +74,19 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 
 - `src/chunk.py` — `CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`, `SECTION_PROMPT_MAX=4000`; split on `## ` first, then sliding window within a section; prefix each chunk with `{doc_title} > {heading}`; `section_text` holds the prompt expansion; `resolve_docs_dir()` / recursive `*.md`
 - `src/build_index.py` — atomic write via `index/.tmp/` then replace; `config.json` includes `files` and `indexed_at`; `build()` returns that config; reads `DOCS_DIR`
-- `src/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`; `prompt_excerpts()` applies `RERANK_FLOOR` / `RERANK_MARGIN`
-- `src/library.py` — safe markdown names; list/read/atomic write/delete under `DOCS_DIR` (does not rebuild the index)
+- `src/retrieve.py` — lazy-loads embedder, reranker, index, and pickled chunks into module globals; `reload()` re-reads FAISS without restarting; `_state_lock` around `_index`/`_chunks`; `RERANK_TRUST = 0.0` gates whether rerank order ships; `prompt_excerpts()` applies `RERANK_FLOOR` / `RERANK_MARGIN` against the best logit
+- `src/library.py` — safe markdown names; list/read/atomic write/delete under `DOCS_DIR` (does not rebuild the index); list state `changed` when mtime is after `indexed_at`
 - `src/review.py` — proposal JSON under `src/review/`; stage, save draft, approve, reject
 - `src/format_md.py` — LLM rewrite to one `#` title and `##` sections; rejects a bad result
 - `src/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `GET/PUT/POST/DELETE /api/review`, `POST /api/reindex`, `GET /api/status`, PWA static routes
-- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel). Source meta says `section` or `excerpt`.
+- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel). Source meta says `section` or `excerpt`, plus whether the reranker ordered the list. A stale index shows a note linking to Library.
 - `src/static/library.html` — Library UI: review queue, editor, file list, upload, delete, Re-index
 - `src/static/app.css` — shared theme, header, nav
 - `src/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
-- `src/static/sw.js` — caches the UI shell (`ask-northwind-v7`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `src/static/sw.js` — caches the UI shell (`ask-northwind-v8`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
 - `src/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
 - `src/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
-- `src/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k, not answer correctness
+- `src/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k for vector, ungated rerank, and confident rerank; not answer correctness
 - `src/docs/` — 11 synthetic `.md` files; company name is Northwind Retail Co.
 
 ## Environment
@@ -109,14 +112,14 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 
 - No unit tests and no pytest. Accuracy is `eval.py` recall@k (did the expected `source_file` appear in the top-k chunks).
 - Verify library/API changes with `python -c` or FastAPI `TestClient` against `server.py`, plus `eval.py` when retrieval or `build()` changes. Do not add a test runner.
-- On this corpus (~52 chunks, 11 topically separated docs) vector search and rerank both report ~95% @1 and 100% @3/@5, but they fail *different* queries. Treat eval-set changes as the source of truth, not a single example query. Fail a retrieval change if @3 drops below 100%.
+- On this corpus vector search and ungated rerank each report 95% @1 and 100% @3/@5, and they fail *different* queries (laptop return vs benefits enrollment). Shipped `retrieve()` (the confident column) is 100% @1/@3/@5. Treat eval-set changes as the source of truth, not a single example query. Fail a retrieval change if any column’s @3 drops below 100%, or if the confident column’s @1 drops below 100%.
 - `eval.py` does not call the LLM.
 
 ## Gotchas
 
 - Rebuild the index after any corpus edit (CLI `build_index.py` or the UI **Re-index**); retrieval reads whatever is on disk. A running server does not pick up a CLI rebuild until Re-index or restart.
-- Approve writes the live file. Ask can still cite the previous index until Re-index; a staged upload is invisible to search until Approve and then Re-index.
-- Do not treat rerank as strictly better here. README documents a laptop-return query that vector search gets right and the reranker flips to `it_security_policy.md`.
+- Approve writes the live file. Ask can still cite the previous index until Re-index; the Ask note and the Library `changed` badge are the signal, not a rebuild. A staged upload is invisible to search until Approve and then Re-index.
+- Do not treat ungated rerank as strictly better. The laptop-return query is right in vector search and wrong in rerank order (`it_security_policy.md`, logit below 0). The gate keeps vector order for that question. `eval.py` must keep printing the ungated column.
 - Generation must not use outside knowledge; if chunks are empty or insufficient, say so.
 - PWA caches the shell only (`/`, `/library`, `/app.css`, manifest, sw, icons). Ask, upload, and re-index still need the server. Offline Library copy is “You're offline.”; Ask still uses “Not connected. Use Reconnect.”
 - Production follow-ups (hybrid BM25, query rewrite, metadata filters, RAGAS, citation verification, auth, PDF, auto-reindex, chat history) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked.
