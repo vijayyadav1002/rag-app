@@ -168,11 +168,10 @@ being able to discuss:
   search (BM25) and fuse the results (e.g. Reciprocal Rank Fusion). Dense
   retrieval is weak on exact terms — product codes, error codes like
   "E3", proper nouns — that BM25 catches directly.
-- **Query rewriting / expansion**: use the LLM to rewrite a vague or
-  colloquial user query into one or more retrieval-friendly queries
-  before searching (also handles multi-turn conversational context —
-  "what about the international rate?" needs the prior turn's topic
-  folded in).
+- **Multi-query expansion**: Ask already rewrites one follow-up into a
+  single standalone search question. A production system often searches
+  several phrasings, or a hypothetical answer, and fuses those lists.
+  That extra fan-out is not here.
 - **Metadata filtering**: tag chunks with department, doc type, or
   recency, and let retrieval filter/boost on that — critical once you
   have hundreds of documents and multiple doc versions where an
@@ -206,7 +205,7 @@ being able to discuss:
 | `chunk.py` | Heading-aware chunking with overlap |
 | `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`) |
 | `retrieve.py` | Vector search + cross-encoder rerank; keep rerank order only when the best logit is ≥ 0; `reload()` hot-swaps FAISS |
-| `generate.py` | Prompt assembly + citations (`answer_stream` for the UI) |
+| `generate.py` | Prompt assembly + citations; follow-ups become one standalone search question (`answer_stream` for the UI) |
 | `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k: vector, ungated rerank, and the shipped gate |
@@ -222,7 +221,7 @@ being able to discuss:
 
 ## Web UI
 
-`server.py` serves Ask at `/` (`static/index.html`) and Library at `/library` (`static/library.html`), plus a WebSocket at `/ws`. Ask sends `{ "question": "..." }` and renders events in order: retrieving → source excerpts → tokens → done. The RAG path is still retrieve-then-rerank-then-generate; the socket is only transport. Both pages share a top nav and `static/app.css`. The app is a PWA: Add to Home Screen installs it (`start_url` `/`); the service worker caches the shell, not answers.
+`server.py` serves Ask at `/` (`static/index.html`) and Library at `/library` (`static/library.html`), plus a WebSocket at `/ws`. Ask keeps one thread in the tab. A follow-up sends `{ "question", "history" }` (the earlier questions and answers). The page shows those turns instead of replacing the last one. Search rewrites a follow-up into one standalone question, then retrieves, reranks, and generates with the conversation in the prompt. The first question is searched as typed. **New chat** clears the thread. `{ "cancel": true }` stops an answer that is still streaming. The server does not store the transcript. Both pages share a top nav and `static/app.css`. The app is a PWA: Add to Home Screen installs it (`start_url` `/`); the service worker caches the shell, not answers.
 
 ```bash
 ./.venv/bin/python server.py
@@ -234,4 +233,4 @@ Then open `http://127.0.0.1:8000`. `cli.py` is unchanged.
 
 Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Approve** writes or removes the live file. **Reject** drops the proposal. There is no login — anyone who can open the app can approve. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit sends its `##` section (up to 4,000 characters of body) into the prompt; embedding and rerank still use the 800-character window. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
-Auth, PDF/Word, chat history, auto-reindex on upload, and offline Q&A are out of scope.
+Auth, PDF/Word, a stored list of past chats, auto-reindex on upload, and offline Q&A are out of scope. The Ask thread is one tab session only.

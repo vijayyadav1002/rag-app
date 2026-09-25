@@ -41,7 +41,8 @@ index/                  chunks.faiss, metadata.pkl, config.json
 retrieve.py             top-20 vector search → cross-encoder rerank;
                         keep that order only when the best logit is ≥ 0, else vector order → top-4
    ▼
-generate.py             grounded prompt + citations
+generate.py             follow-up → standalone search question; grounded prompt
+                        includes the recent turns; first question is searched as typed
    ▼
 llm.py                  Anthropic or OpenAI-compatible LLM
    ▼
@@ -68,7 +69,7 @@ Two-stage ingest: **Approve** writes `DOCS_DIR` (default `docs/`). Search change
 - Empty corpus → `IndexBuildError("No chunks to index.")` → HTTP 400; live `index/` untouched.
 - `build()` succeeds and `reload()` fails → HTTP 500 `"Index rebuilt on disk but failed to load. Restart the server."`
 
-Library is `GET /library` (`library.html`), not a panel on Ask. The only extra HTML route is `/library`. Shell layout is `docs/superpowers/specs/2026-09-18-library-page-design.md` (it supersedes the same-page UI in `2026-09-18-pwa-library-reindex-design.md`; do not rewrite that file). Do not add auto-reindex on upload, chat history, login, incremental FAISS, filesystem watchers, or further HTML routes.
+Library is `GET /library` (`library.html`), not a panel on Ask. The only extra HTML route is `/library`. Shell layout is `docs/superpowers/specs/2026-09-18-library-page-design.md` (it supersedes the same-page UI in `2026-09-18-pwa-library-reindex-design.md`; do not rewrite that file). Ask keeps one thread in the browser tab (`sessionStorage` key `ask-northwind-chat`). New chat clears it. The server does not store transcripts. Do not add auto-reindex on upload, a server-side chat log, a list of past chats, login, incremental FAISS, filesystem watchers, or further HTML routes.
 
 ## Key files
 
@@ -79,12 +80,12 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 - `src/review.py` — proposal JSON under `src/review/`; stage, save draft, approve, reject
 - `src/format_md.py` — LLM rewrite to one `#` title and `##` sections; rejects a bad result
 - `src/server.py` — FastAPI: `GET /`, `GET /library`, `GET /app.css`, `WS /ws`, `GET/POST/DELETE /api/docs`, `GET/PUT/POST/DELETE /api/review`, `POST /api/reindex`, `GET /api/status`, PWA static routes
-- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel). Source meta says `section` or `excerpt`, plus whether the reranker ordered the list. A stale index shows a note linking to Library.
+- `src/static/index.html` — Ask UI + top nav + service worker register (no library panel). One thread of turns; each keeps its excerpts. A follow-up sends the committed questions and answers. New chat clears the tab session. Source meta says `section` or `excerpt`, plus whether the reranker ordered the list. A stale index shows a note linking to Library.
 - `src/static/library.html` — Library UI: review queue, editor, file list, upload, delete, Re-index
 - `src/static/app.css` — shared theme, header, nav
 - `src/static/manifest.webmanifest` — PWA install metadata (name “Ask Northwind”, standalone, `start_url` `/`)
-- `src/static/sw.js` — caches the UI shell (`ask-northwind-v8`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
-- `src/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”
+- `src/static/sw.js` — caches the UI shell (`ask-northwind-v9`); precaches `/`, `/library`, `/app.css`; never `/ws` or `/api/*`. Bump the cache name when the shell changes.
+- `src/generate.py` — `SYSTEM_PROMPT` forces citations and “I don’t know”. A follow-up is rewritten into one standalone search question (`REWRITE_MAX_TOKENS = 80`); the answer prompt then includes at most 8 messages and 6000 characters of earlier turns. Empty history skips the rewrite.
 - `src/llm.py` — vendor boundary: `complete()` / `stream()`; `LLM_PROVIDER` + `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`
 - `src/eval.py` — `TEST_SET` of 20 labeled queries; metric is source-doc recall@k for vector, ungated rerank, and confident rerank; not answer correctness
 - `src/docs/` — 11 synthetic `.md` files; company name is Northwind Retail Co.
@@ -122,4 +123,4 @@ Library is `GET /library` (`library.html`), not a panel on Ask. The only extra H
 - Do not treat ungated rerank as strictly better. The laptop-return query is right in vector search and wrong in rerank order (`it_security_policy.md`, logit below 0). The gate keeps vector order for that question. `eval.py` must keep printing the ungated column.
 - Generation must not use outside knowledge; if chunks are empty or insufficient, say so.
 - PWA caches the shell only (`/`, `/library`, `/app.css`, manifest, sw, icons). Ask, upload, and re-index still need the server. Offline Library copy is “You're offline.”; Ask still uses “Not connected. Use Reconnect.”
-- Production follow-ups (hybrid BM25, query rewrite, metadata filters, RAGAS, citation verification, auth, PDF, auto-reindex, chat history) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked.
+- Production follow-ups (hybrid BM25, multi-query expansion, metadata filters, RAGAS, citation verification, auth, PDF, auto-reindex, a stored list of past chats) are intentionally unimplemented — see README. Don’t silently “upgrade” the demo into that unless asked. Multi-turn Ask is in scope: one tab session, a standalone search question, and the recent turns in the answer prompt.

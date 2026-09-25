@@ -20,52 +20,48 @@
         <a href="/library">Library</a>
       </nav>
     </header>
-    <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes.</p>
+    <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes. A follow-up keeps this conversation. New chat starts a fresh session.</p>
     <p id="index-note" class="index-note" hidden></p>
+    <div id="thread"></div>
 
     <form id="ask-form">
-      <input id="question" type="text" autocomplete="off"
-             placeholder="How many PTO days do I get per year?" />
-      <button type="submit" id="ask">Ask</button>
-    </form>
-
-    <section class="panel" aria-live="polite">
-      <h2>Pipeline</h2>
       <p id="status" class="idle">Ready</p>
-      <div id="chunks"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Answer</h2>
-      <div id="answer" class="md"></div>
-    </section>
-
-    <footer>
-      <span id="conn">disconnected</span>
-      <button type="button" class="ghost" id="reconnect">Reconnect</button>
-    </footer>
+      <textarea id="question" rows="2" autocomplete="off" aria-label="Question"
+                placeholder="How many PTO days do I get per year?"></textarea>
+      <div class="ask-actions">
+        <button type="submit" id="ask">Ask</button>
+        <button type="button" class="ghost" id="new-chat" disabled>New chat</button>
+        <span id="conn">disconnected</span>
+        <button type="button" class="ghost" id="reconnect">Reconnect</button>
+      </div>
+    </form>
   </main>
   <script>
     const form = document.getElementById("ask-form");
     const input = document.getElementById("question");
     const askBtn = document.getElementById("ask");
+    const newChatBtn = document.getElementById("new-chat");
     const statusEl = document.getElementById("status");
-    const chunksEl = document.getElementById("chunks");
-    const answerEl = document.getElementById("answer");
+    const threadEl = document.getElementById("thread");
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
     const indexNote = document.getElementById("index-note");
 
-    let ws = null;
-    let answering = false;
-    let rebuilding = false;
-    let answerMd = "";
+    const STORAGE_KEY = "ask-northwind-chat";
+    const NO_INFO = "I don't have information about that in the available documents.";
     const REBUILD_MSG = "Index is rebuilding. Try again when it finishes.";
-
     const STAGE = {
+      rewriting: "Reading the conversation…",
       retrieving: "Searching documents…",
       generating: "Writing answer…",
     };
+
+    let ws = null;
+    let answering = false;
+    let rebuilding = false;
+    let epoch = 0;
+    let active = null;
+    let committed = [];
 
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, (ch) =>
@@ -218,21 +214,25 @@
       return out.join("");
     }
 
-    function setAnswer(md) {
-      answerMd = md;
-      answerEl.innerHTML = renderMarkdown(md);
-    }
-
     function setConn(state) {
       connEl.className = state;
       connEl.textContent = state;
       reconnectBtn.classList.toggle("show", state !== "connected");
     }
 
+    function syncComposer() {
+      const locked = rebuilding || answering;
+      input.disabled = locked;
+      askBtn.disabled = locked;
+      newChatBtn.disabled = threadEl.childElementCount === 0 && !answering;
+      input.placeholder = committed.length
+        ? "Ask a follow-up…"
+        : "How many PTO days do I get per year?";
+    }
+
     function setBusy(busy) {
       answering = busy;
-      input.disabled = busy || rebuilding;
-      askBtn.disabled = busy || rebuilding;
+      syncComposer();
     }
 
     function setStatus(text, kind) {
@@ -256,9 +256,143 @@
 
     function setRebuildLock(locked) {
       rebuilding = locked;
-      input.disabled = locked || answering;
-      askBtn.disabled = locked || answering;
+      syncComposer();
       if (locked) setStatus(REBUILD_MSG, "err");
+    }
+
+    function persist() {
+      try {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ turns: committed }));
+      } catch (err) {
+        // The thread still lives in this page if storage is unavailable.
+      }
+    }
+
+    function loadCommitted() {
+      try {
+        const raw = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null");
+        if (!raw || !Array.isArray(raw.turns)) return [];
+        return raw.turns.filter((turn) =>
+          turn && typeof turn.question === "string" && typeof turn.answer === "string" && turn.answer.trim()
+        );
+      } catch (err) {
+        return [];
+      }
+    }
+
+    function closeExcerpts() {
+      threadEl.querySelectorAll("details").forEach((node) => {
+        node.open = false;
+      });
+    }
+
+    function appendTurn(question) {
+      closeExcerpts();
+      const article = document.createElement("article");
+      article.className = "turn";
+      const you = document.createElement("p");
+      you.className = "who";
+      you.textContent = "You";
+      const asked = document.createElement("p");
+      asked.className = "user-q";
+      asked.textContent = question;
+      const bot = document.createElement("p");
+      bot.className = "who";
+      bot.textContent = "Northwind";
+      const details = document.createElement("details");
+      details.open = true;
+      const summary = document.createElement("summary");
+      summary.textContent = "Excerpts";
+      const excerpts = document.createElement("div");
+      excerpts.className = "chunks";
+      details.append(summary, excerpts);
+      const answer = document.createElement("div");
+      answer.className = "answer";
+      article.append(you, asked, bot, details, answer);
+      threadEl.append(article);
+      article.scrollIntoView({ block: "end" });
+      return {
+        epoch,
+        question,
+        query: "",
+        ranking: "",
+        chunks: [],
+        md: "",
+        details,
+        excerptsEl: excerpts,
+        answerEl: answer,
+      };
+    }
+
+    function showSources(turn, chunks, ranking) {
+      turn.chunks = chunks;
+      turn.ranking = ranking;
+      const el = turn.excerptsEl;
+      el.replaceChildren();
+      if (turn.query && turn.query !== turn.question) {
+        const line = document.createElement("p");
+        line.className = "search-as";
+        line.textContent = "Follow-up searched as: " + turn.query;
+        el.append(line);
+      }
+      if (!chunks.length) {
+        const empty = document.createElement("p");
+        empty.className = "preview";
+        empty.textContent = "No matching excerpts.";
+        el.append(empty);
+        return;
+      }
+      const note = document.createElement("p");
+      note.className = "preview";
+      note.textContent = ranking === "rerank"
+        ? "Ordered by the reranker."
+        : "Reranker scores were below 0, so these stay in vector-search order.";
+      el.append(note);
+      for (const chunk of chunks) {
+        const card = document.createElement("article");
+        card.className = "chunk";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const kind = chunk.expanded ? "section" : "excerpt";
+        meta.textContent = `[${chunk.n}] ${chunk.source_file} · ${kind}`;
+        const preview = document.createElement("div");
+        preview.className = "preview";
+        preview.textContent = chunk.preview;
+        card.append(meta, preview);
+        el.append(card);
+      }
+    }
+
+    function commitActive() {
+      if (!active || !active.md.trim()) return;
+      committed.push({
+        question: active.question,
+        answer: active.md,
+        ranking: active.ranking || "vector",
+        query: active.query || "",
+        chunks: active.chunks || [],
+      });
+      active = null;
+      persist();
+      syncComposer();
+    }
+
+    function historyPayload() {
+      const history = [];
+      for (const turn of committed) {
+        history.push({ role: "user", content: turn.question });
+        history.push({ role: "assistant", content: turn.answer });
+      }
+      return history;
+    }
+
+    function renderSaved(turn) {
+      const view = appendTurn(turn.question);
+      view.query = turn.query || "";
+      view.md = turn.answer;
+      view.answerEl.innerHTML = renderMarkdown(turn.answer);
+      showSources(view, Array.isArray(turn.chunks) ? turn.chunks : [], turn.ranking || "vector");
+      view.details.open = false;
     }
 
     let pollTimer = null;
@@ -322,79 +456,118 @@
       ws.onmessage = (ev) => handle(JSON.parse(ev.data));
     }
 
+    function currentTurn() {
+      return active && active.epoch === epoch ? active : null;
+    }
+
     function handle(event) {
+      const turn = currentTurn();
       if (event.type === "status") {
         setStatus(STAGE[event.stage] || event.stage);
+        if (turn && event.query) turn.query = event.query;
         return;
       }
       if (event.type === "sources") {
-        chunksEl.replaceChildren();
-        if (!event.chunks.length) {
-          const empty = document.createElement("p");
-          empty.className = "preview";
-          empty.textContent = "No matching excerpts.";
-          chunksEl.appendChild(empty);
-          return;
-        }
-        const note = document.createElement("p");
-        note.className = "preview";
-        note.textContent = event.ranking === "rerank"
-          ? "Ordered by the reranker."
-          : "Reranker scores were below 0, so these stay in vector-search order.";
-        chunksEl.appendChild(note);
-        for (const chunk of event.chunks) {
-          const card = document.createElement("article");
-          card.className = "chunk";
-          const meta = document.createElement("div");
-          meta.className = "meta";
-          const kind = chunk.expanded ? "section" : "excerpt";
-          meta.textContent = `[${chunk.n}] ${chunk.source_file} · ${kind}`;
-          const preview = document.createElement("div");
-          preview.className = "preview";
-          preview.textContent = chunk.preview;
-          card.append(meta, preview);
-          chunksEl.appendChild(card);
-        }
+        if (!turn) return;
+        showSources(turn, event.chunks || [], event.ranking || "vector");
         return;
       }
       if (event.type === "token") {
-        setAnswer(answerMd + event.text);
+        if (!turn || !event.text) return;
+        turn.md += event.text;
+        turn.answerEl.innerHTML = renderMarkdown(turn.md);
+        const gap = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+        if (gap < 160) turn.answerEl.scrollIntoView({ block: "end" });
         return;
       }
       if (event.type === "done") {
+        if (!turn) return;
+        commitActive();
         setBusy(false);
         setStatus("Ready", "idle");
         input.focus();
         return;
       }
-      if (event.type === "error") {
+      if (event.type === "cancelled") {
         setBusy(false);
+        if (!rebuilding) setStatus("Ready", "idle");
+        return;
+      }
+      if (event.type === "error") {
         if (event.message === REBUILD_MSG) {
           setRebuildLock(true);
           startRebuildPoll();
+          if (turn) setBusy(false);
           return;
         }
+        if (!turn) return;
+        if (event.message === NO_INFO) {
+          turn.md = NO_INFO;
+          turn.answerEl.innerHTML = renderMarkdown(NO_INFO);
+          commitActive();
+          setBusy(false);
+          setStatus("Ready", "idle");
+          input.focus();
+          return;
+        }
+        setBusy(false);
         setStatus(event.message, "err");
         input.focus();
       }
     }
 
-    form.addEventListener("submit", (e) => {
-      e.preventDefault();
+    function ask(event) {
+      event.preventDefault();
       const question = input.value.trim();
       if (!question || answering) return;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         setStatus("Not connected. Use Reconnect.", "err");
         return;
       }
-      chunksEl.replaceChildren();
-      setAnswer("");
+      const history = historyPayload();
+      active = appendTurn(question);
+      input.value = "";
       setStatus("Sending…");
       setBusy(true);
-      ws.send(JSON.stringify({ question }));
-    });
+      ws.send(JSON.stringify({ question, history }));
+    }
 
+    function newChat() {
+      const wasAnswering = answering;
+      epoch += 1;
+      active = null;
+      committed = [];
+      threadEl.replaceChildren();
+      try {
+        sessionStorage.removeItem(STORAGE_KEY);
+      } catch (err) {
+        // The cleared page is enough when storage is unavailable.
+      }
+      input.value = "";
+      if (wasAnswering && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ cancel: true }));
+      } else {
+        setBusy(false);
+        if (!rebuilding) setStatus("Ready", "idle");
+      }
+      syncComposer();
+      input.focus();
+    }
+
+    form.addEventListener("submit", ask);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    newChatBtn.addEventListener("click", newChat);
     reconnectBtn.addEventListener("click", connect);
+    committed = loadCommitted();
+    committed.forEach(renderSaved);
+    const lastDetails = threadEl.querySelector(".turn:last-child details");
+    if (lastDetails) lastDetails.open = true;
+    syncComposer();
     connect();
     checkRebuildOnLoad();
     document.addEventListener("visibilitychange", () => {

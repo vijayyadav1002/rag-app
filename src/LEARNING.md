@@ -545,7 +545,7 @@ That is not “RAG is solved.” It is “a small, topically distinct handbook i
 
 - FastAPI app. `GET /` returns the HTML file. `WS /ws` is the socket.
 - Lifespan: refuse to start if `index/chunks.faiss` is missing; preload `_load()` on a worker thread so model init does not block the event loop as badly.
-- One question at a time per connection (`busy`). A second question while answering gets `already answering`.
+- One question at a time per connection. A second question while answering gets `already answering`. The receive loop keeps reading, so a cancel frame can stop the in-flight turn.
 - Empty string → error, no retrieve.
 - `_pump` runs `answer_stream` on a **daemon thread** because retrieve (PyTorch) is blocking. Events go onto an `asyncio.Queue`; the async coroutine `send_json`s them. If this ran on the event loop, one user’s embedding forward pass would freeze every other socket.
 - Disconnect → `cancel.set()`.
@@ -554,13 +554,14 @@ Uvicorn serves `127.0.0.1:8000`. This is a learning server, not a deployment.
 
 **`static/index.html`**
 
-One page: question box, pipeline panel, answer panel, connection footer.
+One page: a thread of turns, a composer stuck to the bottom, connection state beside Ask and New chat. Each turn keeps the excerpts that supported that answer.
 
-- Sends `{ "question": "..." }`.
-- On `sources`, builds numbered cards with `textContent` (no HTML injection from docs).
-- On `token`, appends to a Markdown buffer and re-renders `#answer` as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible.
-- No chat history. A new question clears the previous turn. That matches “single-shot RAG” — follow-up questions like “what about contractors?” would need query rewriting / history folding, which this demo does not implement (see Part 9).
-- Reconnect is manual. No retry loop.
+- Sends `{ "question", "history" }`. `history` is the committed questions and answers already on screen. The first question sends an empty list.
+- A follow-up first shows “Reading the conversation…”. `generate.py` rewrites that follow-up into one standalone search question, then retrieves with that string. The answer prompt still contains the earlier turns, and citation numbers apply only to this turn’s excerpts. If the rewrite fails, search uses the previous user question plus the new one.
+- On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). A rewritten search is labeled `Follow-up searched as: …`.
+- On `token`, appends to that turn’s Markdown buffer and re-renders it as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible.
+- The thread lives in `sessionStorage` (`ask-northwind-chat`) so a reload keeps the session. **New chat** deletes it. The server stores nothing, and there is no list of old conversations.
+- `{ "cancel": true }` stops an answer still in flight. Reconnect is manual. No retry loop.
 
 **Python is a fine language for this.** The embedding and FAISS ecosystem is Python-first. FastAPI’s WebSocket support is enough. The RAG core would look the same behind any other transport (SSE, gRPC, a job queue).
 
@@ -710,11 +711,11 @@ Sentence-transformers, FAISS, and the Anthropic/OpenAI SDKs are native here. The
 
 **“What would you add in production?”** (from the README, be honest you did not build them)
 
-Hybrid BM25 + vectors (exact tokens: error codes, SKUs). Query rewrite for chat follow-ups. Metadata filters (dept, effective date). Chunk-size sweep on eval. Larger eval from real tickets. Answer-level metrics. Citation verification. Caching. PII / prompt-injection guardrails.
+Hybrid BM25 + vectors (exact tokens: error codes, SKUs). Multi-query expansion beyond the one standalone follow-up question this demo already writes. Metadata filters (dept, effective date). Chunk-size sweep on eval. Larger eval from real tickets. Answer-level metrics. Citation verification. Caching. PII / prompt-injection guardrails. A stored list of past chats.
 
 **“Show me a bug in your own system.”**
 
-Ungated rerank prefers IT security over equipment return for the laptop query; the gate keeps vector order because that logit is negative. Eval labels files not spans. We still return neighbors when every score is negative — the gate chooses order, it does not abstain. The index can still be stale; Ask and Library now say so, and search changes only on Re-index. Nomic prefixes are easy to drop on a rewrite. Small local models skip citations. No multi-turn. That’s the demo, not a cover-up.
+Ungated rerank prefers IT security over equipment return for the laptop query; the gate keeps vector order because that logit is negative. Eval labels files not spans. We still return neighbors when every score is negative — the gate chooses order, it does not abstain. The index can still be stale; Ask and Library now say so, and search changes only on Re-index. Nomic prefixes are easy to drop on a rewrite. Small local models skip citations. The chat window keeps four exchanges and the server does not remember you after New chat. That’s the demo, not a cover-up.
 
 ---
 
@@ -725,7 +726,7 @@ The README’s “production version” list is not a backlog we forgot. It is t
 | Not built | Why it exists in real systems | Why it’s omitted here |
 |-----------|-------------------------------|------------------------|
 | Hybrid BM25 | Embeddings miss exact codes (`E3`) | Corpus is prose; would hide the vector story |
-| Query rewrite / chat memory | “What about contractors?” needs the previous turn | We chose single-shot so retrieve is obvious |
+| Multi-query expansion and a chat log | Several searches per turn, and a sidebar of old threads | One standalone rewrite is visible on the turn. The thread is this tab only |
 | Metadata filters | Don’t retrieve an obsolete policy version | One version of each doc |
 | LangChain / LiteLLM | Faster to scaffold / one model string for 100 vendors | Hides stages; we kept two HTTP shapes visible |
 | Answer grading / RAGAS | Know if the *sentence* is right | Would call an LLM from eval and mix failure modes |
@@ -740,7 +741,7 @@ If you implement those later, keep `chunk.py` / `retrieve.py` / `generate.py` / 
 1. Open `docs/pto_policy.md`, point at `## Accrual`, 15 days / 20 after 5 years.
 2. Run `python retrieve.py "How many PTO days do I get per year?"` and show vector vs rerank lists.
 3. Run `python llm.py` to show which provider resolved, then `python cli.py "How many PTO days do I get per year?"` and show `[1]` next to `pto_policy.md`.
-4. In the UI, ask the same question and pause on the **pipeline panel** — “this is retrieval; the model has not written yet.”
+4. In the UI, ask the same question and pause on the open **Excerpts** — “this is retrieval; the model has not written yet.” Ask “what about contractors?” next and show the standalone search line, then New chat.
 5. Ask the laptop-return question and, if rerank surfaces IT security, *celebrate it*: “this is why we measure.”
 6. Run `python eval.py` and say the three columns: 95% / 95% / 100% at rank 1, and 100% at 3. Name the two ungated misses.
 

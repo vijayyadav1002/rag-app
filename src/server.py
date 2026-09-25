@@ -1,8 +1,9 @@
 """
 WebSocket transport for the existing RAG pipeline.
 
-The server does not retrieve or prompt. It accepts one question, iterates
-`answer_stream()`, and forwards JSON events. Retrieval and generation stay
+The server does not retrieve or prompt. It accepts a question plus earlier
+turns, iterates `answer_stream()`, and forwards JSON events. A cancel frame
+can arrive while that stream is still running. Retrieval and generation stay
 in retrieve.py / generate.py so the CLI and the UI share one brain.
 """
 
@@ -328,69 +329,28 @@ def icon(name: str) -> FileResponse:
     return FileResponse(path)
 
 
-@app.websocket("/ws")
-async def ws_ask(websocket: WebSocket) -> None:
-    global _active_answers
-    await websocket.accept()
-    busy = False
-    cancel = threading.Event()
-    try:
-        while True:
-            raw = await websocket.receive_json()
-            question = str(raw.get("question") or "").strip()
-            if _rebuilding:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": "Index is rebuilding. Try again when it finishes.",
-                    }
-                )
-                continue
-            if busy:
-                await websocket.send_json(
-                    {"type": "error", "message": "already answering"}
-                )
-                continue
-            if not question:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": "Ask a question about Northwind documents.",
-                    }
-                )
-                continue
-            busy = True
-            cancel.clear()
-            _active_answers += 1
-            _idle().clear()
-            try:
-                await _pump(websocket, question, cancel)
-            finally:
-                _active_answers -= 1
-                if _active_answers == 0:
-                    _idle().set()
-                busy = False
-    except WebSocketDisconnect:
-        cancel.set()
-
-
 async def _pump(
-    websocket: WebSocket, question: str, cancel: threading.Event
+    websocket: WebSocket,
+    question: str,
+    history: object,
+    cancel: threading.Event,
+    send_lock: asyncio.Lock,
 ) -> None:
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
     def worker() -> None:
         try:
-            for event in answer_stream(question, cancel=cancel):
+            for event in answer_stream(question, cancel=cancel, history=history):
                 if cancel.is_set():
                     break
                 asyncio.run_coroutine_threadsafe(queue.put(event), loop).result()
         except Exception as exc:
-            asyncio.run_coroutine_threadsafe(
-                queue.put({"type": "error", "message": f"Generation failed: {exc}"}),
-                loop,
-            ).result()
+            if not cancel.is_set():
+                asyncio.run_coroutine_threadsafe(
+                    queue.put({"type": "error", "message": f"Generation failed: {exc}"}),
+                    loop,
+                ).result()
         finally:
             asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
 
@@ -401,10 +361,107 @@ async def _pump(
             event = await queue.get()
             if event is None:
                 break
-            await websocket.send_json(event)
+            async with send_lock:
+                await websocket.send_json(event)
     except WebSocketDisconnect:
         cancel.set()
         raise
+
+
+async def _notify_cancelled(task: asyncio.Task, send) -> None:
+    """Tell the page the in-flight answer has stopped.
+
+    The cancel frame can arrive just after the pump task already finished.
+    Waiting here covers the case where it is still running, and the caller
+    sends the event itself when the task is already done.
+    """
+    try:
+        await task
+    except BaseException:
+        pass
+    try:
+        await send({"type": "cancelled"})
+    except Exception:
+        pass
+
+
+@app.websocket("/ws")
+async def ws_ask(websocket: WebSocket) -> None:
+    global _active_answers
+    await websocket.accept()
+    send_lock = asyncio.Lock()
+    cancel = threading.Event()
+    pump_task: asyncio.Task | None = None
+    background: set[asyncio.Task] = set()
+
+    async def send(payload: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            if not isinstance(raw, dict):
+                await send(
+                    {
+                        "type": "error",
+                        "message": "Ask a question about Northwind documents.",
+                    }
+                )
+                continue
+            if raw.get("cancel"):
+                cancel.set()
+                if pump_task is not None and not pump_task.done():
+                    notice = asyncio.create_task(_notify_cancelled(pump_task, send))
+                    background.add(notice)
+                    notice.add_done_callback(background.discard)
+                else:
+                    await send({"type": "cancelled"})
+                continue
+            question = str(raw.get("question") or "").strip()
+            if _rebuilding:
+                await send(
+                    {
+                        "type": "error",
+                        "message": "Index is rebuilding. Try again when it finishes.",
+                    }
+                )
+                continue
+            if pump_task is not None and not pump_task.done():
+                await send({"type": "error", "message": "already answering"})
+                continue
+            if not question:
+                await send(
+                    {
+                        "type": "error",
+                        "message": "Ask a question about Northwind documents.",
+                    }
+                )
+                continue
+            cancel = threading.Event()
+            history = raw.get("history")
+            turn_cancel = cancel
+
+            async def run(
+                question: str = question,
+                history: object = history,
+                turn_cancel: threading.Event = turn_cancel,
+            ) -> None:
+                global _active_answers
+                _active_answers += 1
+                _idle().clear()
+                try:
+                    await _pump(websocket, question, history, turn_cancel, send_lock)
+                finally:
+                    _active_answers -= 1
+                    if _active_answers == 0:
+                        _idle().set()
+
+            pump_task = asyncio.create_task(run())
+    except WebSocketDisconnect:
+        cancel.set()
+        if pump_task is not None and not pump_task.done():
+            pump_task.cancel()
 
 
 def main() -> None:
