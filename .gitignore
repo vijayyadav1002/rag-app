@@ -5,3 +5,6 @@ src/*.pyc
 src/.env
 src/rag_docs/
 src/review/
+src/sessions.json
+src/sessions.json.tmp
+.superpowers/
