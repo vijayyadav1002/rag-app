@@ -20,7 +20,9 @@ index/                  — persisted vectors + metadata
 retrieve.py             — vector search (top-20) → cross-encoder rerank;
                           keep that order only when the best logit is ≥ 0
    ▼
-generate.py             — grounded prompt + citations
+generate.py             — a follow-up becomes one standalone search question;
+                          a strong hit may include its ## section;
+                          grounded prompt + citations (recent turns included)
    │
 llm.py                  — Anthropic or OpenAI-compatible (Ollama, etc.)
    ▼
@@ -46,8 +48,9 @@ cp .env.example .env
 
 # Browser UI (same pipeline, streamed over a WebSocket)
 ./.venv/bin/python server.py
-# open http://127.0.0.1:8000          Ask
+# open http://127.0.0.1:8000          Ask (this computer only)
 # open http://127.0.0.1:8000/library  Library (review queue, upload/delete/Re-index)
+# another machine on the same network: set HOST=0.0.0.0 in .env (see “Web UI”)
 # Installable (Add to Home Screen). Re-index lives on the Library
 # page and rebuilds search from DOCS_DIR (default docs/). Upload stages
 # a proposal; Approve writes the file; Re-index updates answers.
@@ -62,18 +65,22 @@ LM Studio, vLLM, Groq, OpenRouter, xAI, OpenAI itself).
 
 | `LLM_PROVIDER` | Driver | Default model | Key | Default base URL |
 |----------------|--------|---------------|-----|------------------|
-| `anthropic` (or unset + `ANTHROPIC_API_KEY`) | Anthropic | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | SDK default |
+| `anthropic` (or unset + `ANTHROPIC_API_KEY`) | Anthropic | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | SDK default |
 | `openai` | Chat Completions | `gpt-4o-mini` | `OPENAI_API_KEY` or `LLM_API_KEY` | `https://api.openai.com/v1` |
 | `ollama` | Chat Completions | `llama3.2` | optional (`ollama` dummy) | `http://127.0.0.1:11434/v1` |
 | `xai` | Chat Completions | `grok-4.5` | `XAI_API_KEY` or `LLM_API_KEY` | `https://api.x.ai/v1` |
 
-Copy `.env.example` to `.env` and uncomment one block. `.env` is gitignored;
-`llm.py` and `chunk.py` load it automatically (exported shell variables still win).
+Copy `.env.example` to `.env` and uncomment one provider block. `.env` is
+gitignored. `llm.py`, `chunk.py`, and `server.py` load it (exported shell
+variables still win).
 
 Optional `DOCS_DIR` points the corpus (chunking, Library upload/delete, Re-index)
 at another markdown folder. Relative paths are from `src/`. Unset keeps
 `docs/`. Nested `*.md` files are indexed; Upload still writes a basename into
 that folder's root. Restart and Re-index after changing it. `index/` stays here.
+
+Optional `HOST` and `PORT` are the Web UI bind address. Unset keeps
+`127.0.0.1` port `8000`. See “Web UI”.
 
 Override model with `LLM_MODEL` and endpoint with `LLM_BASE_URL`. Check
 what `llm.py` resolved:
@@ -158,6 +165,27 @@ That is a model limit; the prompt is the same.
    change if recall at 3 drops below 100%, or if the shipped column drops
    below 100% at rank 1 on this set.
 
+5. **The prompt can see the section, the index still stores the window**
+   (`prompt_excerpts` in `retrieve.py`, called from `generate.py`). After
+   the top 4 are chosen, a hit expands when its rerank score is at least
+   `0` and within `1.0` of the best score in that list. The model then
+   reads `section_text`: the heading plus up to 4,000 characters of the
+   `##` body. Embedding and rerank still use the 800-character window, and
+   `eval.py` does not expand. The margin is taken from the best score in
+   the returned list. The trust gate only restores vector order when that
+   best score is below 0, so a gated list does not expand. Two windows of
+   the same heading become one excerpt when they do. The 11 shipped files
+   are already one chunk per section, so this matters once a longer file
+   is in the index.
+
+6. **A follow-up is one search question** (`generate.py`). The first
+   question is embedded as typed. A later one is rewritten into a single
+   standalone question (`REWRITE_MAX_TOKENS = 80`) before retrieve. The
+   answer prompt still includes the recent turns (at most 8 messages and
+   6,000 characters). If the rewrite fails, search uses the previous
+   question plus the new one, capped at 400 characters. `eval.py` and
+   `cli.py` do not send history.
+
 ## What I'd add for a production version (interview talking points)
 
 These are deliberately **not** implemented here — this is a 3-day learning
@@ -204,15 +232,16 @@ being able to discuss:
 | `docs/` | Default corpus (`DOCS_DIR`); synthetic Northwind markdown |
 | `chunk.py` | Heading-aware chunking with overlap |
 | `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`) |
-| `retrieve.py` | Vector search + cross-encoder rerank; keep rerank order only when the best logit is ≥ 0; `reload()` hot-swaps FAISS |
-| `generate.py` | Prompt assembly + citations; follow-ups become one standalone search question (`answer_stream` for the UI) |
+| `retrieve.py` | Vector search + cross-encoder rerank; keep rerank order only when the best logit is ≥ 0; expand a strong hit to its `##` section after ranking; `reload()` hot-swaps FAISS |
+| `generate.py` | Prompt assembly + citations; follow-ups become one standalone search question; recent turns stay in the answer prompt (`answer_stream` for the UI) |
 | `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
 | `cli.py` | Command-line entrypoint |
 | `eval.py` | Retrieval recall@k: vector, ungated rerank, and the shipped gate |
 | `library.py` | Safe names, list/read/atomic write/delete under `DOCS_DIR` (no rebuild) |
 | `review.py` | Proposal JSON in `review/` until Approve |
 | `format_md.py` | LLM rewrite into `#` / `##` Markdown for the chunker |
-| `server.py` | FastAPI WebSocket shell + library REST + review queue + Re-index lock + `GET /library` |
+| `server.py` | FastAPI WebSocket shell + library REST + review queue + Re-index lock + `GET /library`; bind address is `HOST` and `PORT` from `.env` |
+| `.env.example` | Commented sample. Copy to `.env`: one LLM provider, optional `DOCS_DIR`, optional `HOST` and `PORT` |
 | `static/index.html` | Ask UI + top nav + PWA registration |
 | `static/library.html` | Library UI: review queue, editor, list, upload, delete, Re-index |
 | `static/app.css` | Shared theme and nav |
@@ -227,10 +256,21 @@ being able to discuss:
 ./.venv/bin/python server.py
 ```
 
-Then open `http://127.0.0.1:8000`. `cli.py` is unchanged.
+Then open `http://127.0.0.1:8000`. `cli.py` still asks one question and does not send history. It prints whether the reranker ordered the sources or the scores were below 0, so vector order stayed.
+
+`server.py` reads `HOST` and `PORT` from `.env` (a shell export wins). The same commented pair is in `.env.example`. Unset, the server listens on `127.0.0.1` port `8000`, so only this computer can open it. To reach Ask or Library from another machine on the same network, set this in `.env` and start the server again:
+
+```bash
+HOST=0.0.0.0
+PORT=8000
+```
+
+`PORT` must be an integer from 1 through 65535. On the other machine, open `http://<this-mac-lan-ip>:8000` (use the port you set). On this Mac, `ipconfig getifaddr en0` prints the Wi-Fi address (`en1` on some Macs). There is no login, so anyone who can reach that address can use Ask and can upload, approve, delete, and re-index. The first inbound connection may need Python allowed under System Settings → Network → Firewall.
+
+Each turn labels a source `section` or `excerpt`, and says which order shipped. When the library is ahead of the index, a note links to Library. The page keeps the whole thread. The model sees at most four earlier exchanges (8 messages, 6,000 characters, 1,500 per message). If the rewrite fails, search uses the previous question plus the new one.
 
 ## Library and re-index
 
-Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Approve** writes or removes the live file. **Reject** drops the proposal. There is no login — anyone who can open the app can approve. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit sends its `##` section (up to 4,000 characters of body) into the prompt; embedding and rerank still use the 800-character window. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
+Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. There is no login — anyone who can open the app can approve. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
 Auth, PDF/Word, a stored list of past chats, auto-reindex on upload, and offline Q&A are out of scope. The Ask thread is one tab session only.

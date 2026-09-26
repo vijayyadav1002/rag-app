@@ -41,9 +41,9 @@ This app does that in two clocks:
 
 **Online (every question)**
 
-3. `retrieve.py` embeds the question with the **same** Nomic model, but prefixed `search_query: ` (not `search_document: `). It asks FAISS for the 20 nearest chunks, then a **cross-encoder** reranker (still MiniLM) scores those 20 as (question, chunk) pairs. If the best score is at least 0, that order is what ships. If every score is negative, vector order ships instead. Either way the prompt sees the top 4.
-4. `generate.py` builds a prompt: “answer ONLY from these numbered excerpts; cite `[1]`; if it’s not there, say you don’t know.” `llm.py` sends that to whatever you configured (Claude, Ollama, OpenAI-compatible, …).
-5. `cli.py` prints the answer. `server.py` + `static/index.html` stream the same pipeline over a WebSocket so you can *watch* retrieve → sources → tokens.
+3. `retrieve.py` embeds the question with the **same** Nomic model, but prefixed `search_query: ` (not `search_document: `). It asks FAISS for the 20 nearest chunks, then a **cross-encoder** reranker (still MiniLM) scores those 20 as (question, chunk) pairs. If the best score is at least 0, that order is what ships. If the best score is negative, vector order ships instead, and the scores stay attached. Either way the next step sees the top 4.
+4. `generate.py` may widen a hit before the prompt is built. A chunk whose rerank score is at least 0 and within 1.0 of the best score in that list is replaced by its `##` section (the heading plus up to 4,000 characters of body). On the 11 shipped files every section already fits in the 800-character window, so the prompt text matches the chunk until a longer document is indexed. The prompt then says: answer ONLY from these numbered excerpts; cite `[1]`; if it’s not there, say you don’t know. A follow-up is not embedded as typed. It is rewritten into one standalone search question first. The earlier turns go into the answer prompt, not into the vector. `llm.py` sends the prompt to whatever you configured (Claude, Ollama, OpenAI-compatible, …).
+5. `cli.py` prints the answer and whether the reranker ordered the sources. `server.py` + `static/index.html` stream the same pipeline over a WebSocket so you can watch retrieve → sources → tokens. The browser keeps one thread for the tab. A library edit reaches search only after Approve and then Re-index.
 
 **Eval is retrieval, not answer grading.** `eval.py` has 20 hand-labeled `(question, source file)` pairs. The metric is recall@k: did the right *document* appear in the top-k chunks? Vector search and ungated rerank each miss a different question at rank 1 (95%) and both hit at 3 and 5 (100%). The shipped confidence gate is 100% at 1, 3, and 5 on this set. The disagreement is the interesting part; it is in Part 7.
 
@@ -137,7 +137,7 @@ Recall@k is **not** “was the answer correct.” A system can retrieve the righ
 | Ask Claude with no docs | Invents a generic policy. Wrong for *this* company. |
 | Paste all 11 files into every prompt | Works at this size; dies as soon as the corpus is bigger than the context window, costs more, and the model gets distracted by irrelevant sections. RAG is the version of this idea that still works at scale. |
 | Keyword search (Ctrl+F / grep) | Fails when the user says “vacation days” and the doc says “PTO accrual.” Embeddings catch paraphrases. |
-| Fine-tune the LLM on the handbook | Expensive, stale the day a policy changes, and still can hallucinate. RAG lets you update answers by editing `docs/` and rebuilding the index. |
+| Fine-tune the LLM on the handbook | Expensive, stale the day a policy changes, and still can hallucinate. RAG lets you update answers by approving a Markdown edit and rebuilding the index. |
 
 **What “framework-free” means here**
 
@@ -162,31 +162,37 @@ index/metadata.pkl      the Chunk objects in the same order (no Nomic prefix)
 index/config.json       which model, how many chunks
 
                     ONLINE (every question)
-question
+question  (a follow-up is rewritten into one standalone question first)
    │
    │  retrieve.py
    │     Nomic embed query (`search_query:`)
    │     FAISS top 20
    │     MiniLM cross-encoder; rerank order only if best logit ≥ 0, else vector order → top 4
+   │     prompt_excerpts: a strong hit may become its ## section
    ▼
-RetrievedChunk × 4
+RetrievedChunk × up to 4
    │
    │  generate.py
-   │     numbered prompt + SYSTEM_PROMPT
+   │     numbered prompt + recent turns + SYSTEM_PROMPT
    │     llm.py  Anthropic or OpenAI-compatible (blocking or streaming)
    ▼
 answer text + source list
    │
-   ├─ cli.py                 print and exit
-   └─ server.py / index.html WebSocket events, live UI
+   ├─ cli.py                 print and exit (one question, no history)
+   └─ server.py / index.html WebSocket events, one thread in the tab
+
+                    LIBRARY (separate from a question)
+upload / edit / delete → review/*.json → Approve writes DOCS_DIR
+                                      → Re-index calls build() + reload()
 ```
 
 **Who talks to whom**
 
-- `cli.py` → `generate.answer` → `retrieve.retrieve` → FAISS + reranker → `llm.complete` → Anthropic or OpenAI-compatible HTTP
-- `server.py` → `generate.answer_stream` → same retrieve and same prompt → `llm.stream` → token events
-- `eval.py` → `retrieve` only. **No LLM.** That is deliberate.
+- `cli.py` → `generate.answer` (no history) → `retrieve.retrieve` → `prompt_excerpts` → `llm.complete`
+- `server.py` → `generate.answer_stream` → rewrite when there is history, then the same retrieve and prompt → `llm.stream` → token events
+- `eval.py` → `retrieve` only. **No LLM, no section expansion.** That is deliberate.
 - `chunk.py` is imported by `build_index.py`. Query time does not re-chunk. It reads the pickle.
+- Library upload, edit, and delete write `review/*.json`. Approve writes `DOCS_DIR`. Re-index is the only path that calls `build()` and `reload()`.
 
 Paths are always `Path(__file__).parent`, never “whatever directory you happened to `cd` into,” except that you still *run* the scripts from `src/` so imports like `from chunk import …` resolve.
 
@@ -200,7 +206,7 @@ This is the first thing people mix up in interviews.
 
 **Query time** (`retrieve.py` then `generate.py` / `llm.py`) must be fast. You embed **one** question (tiny), search the index (tiny here), rerank 20 pairs, call whatever LLM `LLM_PROVIDER` selected.
 
-If someone edits `docs/pto_policy.md` and does not rebuild, the index still holds the *old* vectors and the *old* pickled text. Retrieval will be wrong or stale. That is why the README says: rebuild after any `docs/` change.
+If someone edits `docs/pto_policy.md` and does not rebuild, the index still holds the *old* vectors and the *old* pickled text. Retrieval will cite the previous text. Library marks an indexed file `changed` when its mtime is newer than `config.json` `indexed_at`, and Ask says the index is behind. Neither page rebuilds on its own. Search updates on Re-index, or on a CLI `build_index.py` plus a server restart or Re-index. A proposal that has not been approved is not in the corpus, so it is not `changed`.
 
 The embedding model at query time **must be the same** as at index time (`nomic-ai/nomic-embed-text-v1.5`). A vector from model A is not comparable to a vector from model B. `config.json` records which model built the index so you can catch that class of bug. `retrieve.py` refuses to load if they disagree.
 
@@ -231,11 +237,13 @@ The heading is **inside the text that gets embedded**. The vector “knows” th
 
 Score is inner product of two unit vectors, so it lies in roughly `[-1, 1]`. Higher is closer. `-1` in the indices array means “not enough vectors in the index”; we skip those.
 
-### 4. Rerank
+### 4. Rerank, then the trust gate
 
-The 20 `RetrievedChunk`s become 20 pairs `[query, chunk.text]`. `CrossEncoder.predict` returns 20 floats. We sort descending and slice `[:4]`.
+The 20 `RetrievedChunk`s become 20 pairs `[query, chunk.text]`. `CrossEncoder.predict` returns 20 floats (MS MARCO logits). They are sorted descending. If the best logit is at least `RERANK_TRUST` (`0.0`), that order ships and `rank_source` is `rerank`. If it is below 0, the same 20 are sorted back by vector score, `rank_source` is `vector`, and the logits stay on the objects. Either path then slices `[:4]`.
 
-On this question, the top files are typically `pto_policy.md` several times (different sections) plus maybe `sick_leave_policy.md` (nearby HR topic). The UI will show those four previews **before** any answer token. That is the point of the WebSocket `sources` event: you see what the model will be allowed to read.
+On this question the nearest files are typically `pto_policy.md` several times (different sections), sometimes with `sick_leave_policy.md` nearby. When the best logit is at least 0, the shipped list is rerank order and the UI says “Ordered by the reranker.” The UI shows those previews **before** any answer token, labeled `section` or `excerpt`. That is the point of the WebSocket `sources` event: you see what the model will be allowed to read.
+
+`prompt_excerpts` runs after that slice, inside `generate.py`, not inside `eval.py`. A hit expands when its logit is at least 0 and within `RERANK_MARGIN` (`1.0`) of the **best logit in the returned list** (not whichever chunk happens to be first). Its `text` becomes `section_text`. Two windows of the same file and heading collapse to one excerpt when they expand. The PTO sections are shorter than 800 characters, so expansion does not add words on this question. A gated list has a negative best logit, so nothing on it expands.
 
 ### 5. Prompt
 
@@ -303,6 +311,7 @@ These files are the only “truth” the assistant is allowed to use. The LLM’
 | `source_file` | Citations and eval (`pto_policy.md`) |
 | `heading` | Human-readable location; also baked into `text` |
 | `chunk_id` | Stable id like `pto_policy_1_0` for debugging |
+| `section_text` | Heading plus up to `SECTION_PROMPT_MAX` (4000) characters of the section body, sliced so it still contains this window. The prompt may use it later. The embedding uses `text`. |
 
 **`_split_into_sections`**
 
@@ -323,7 +332,7 @@ If a section is ≤ 800 chars, it is one piece. If longer, take `[0:800]`, then 
 
 That heading prefix is an embedding trick: the vector for “1.25 days per month” also contains “Paid Time Off (PTO) Policy > Accrual”, so a query about PTO still matches even if the body never repeats the words “paid time off.” It is a different idea from Nomic’s `search_document:` / `search_query:` prefixes (task instructions for the model, not titles).
 
-**`chunk_directory`** — `sorted(docs_dir.glob("*.md"))` so index order is deterministic.
+**`markdown_paths` / `chunk_directory`** — recurse for `*.md`, skip hidden path parts and symlink escapes, and sort by the posix-relative path so index order is deterministic. `source_file` is that relative path (`pto_policy.md`, or `hr/pto.md` if a nested file is already on disk). Upload still accepts only a basename and stages it at the folder root. `DOCS_DIR`, loaded from `.env` here, overrides `src/docs`. Relative values are from `src/`, not the shell cwd.
 
 **`python chunk.py`** — prints chunk count and the first five chunks. Use this when you change the splitter; you want to *see* the cuts.
 
@@ -356,7 +365,7 @@ FAISS does **not** store the original English. It stores the numbers. That is wh
 |------|----------|----------------|
 | `chunks.faiss` | Vectors + FAISS structure | Fast numeric search |
 | `metadata.pkl` | Python `Chunk` list | Text, filenames, ids |
-| `config.json` | `embedding_model`, `num_chunks` | Sanity check / debugging |
+| `config.json` | `embedding_model`, `num_chunks`, `indexed_at`, `files` | Sanity check, and the Library stale check |
 
 `index/` is gitignored. A fresh clone has no index. That is expected.
 
@@ -399,6 +408,16 @@ Trained on **MS MARCO**, a dataset of Bing-style search queries and relevant pas
 
 The function generation actually calls. After rerank, if the best logit is below `RERANK_TRUST` (`0.0`), the same 20 candidates are sorted back into vector order. `trust_gate=False` is the ungated column in `eval.py`.
 
+**`prompt_excerpts(chunks)`**
+
+Called from `answer` and `answer_stream` after `retrieve`, not from `eval.py`. Ranking already used the 800-character window. This only changes what the prompt may read.
+
+The best logit is `max` of the scores on the **returned** chunks. A hit expands when that score is at least `RERANK_FLOOR` (`0.0`), at least `best - RERANK_MARGIN` (`1.0`), and `section_text` is non-empty. `text` is replaced with `section_text` and `expanded` becomes true. Chunks with no rerank score are returned unchanged.
+
+Because the gate restores vector order only when the best logit is below 0, a shipped vector-ordered list expands nothing. Measuring the margin from the max, rather than from the first chunk, still matters: after a reorder the first chunk is not the strongest logit, and a future change to the gate should not expand off the wrong score.
+
+Two returned windows with the same `source_file` and `heading` collapse to one excerpt once one of them expands. Citation numbers follow the list after that collapse.
+
 **`RERANK_TRUST = 0.0`**
 
 This MiniLM was trained on MS MARCO as a relevance classifier. The raw score is a logit: `sigmoid(0) = 0.5`. Below 0 the model is saying “probably not a relevant passage.” Reordering on that opinion is how the laptop query flips to the encryption policy. The gate refuses that reorder. It does not delete the chunks, and it does not blend the two scores into a third number.
@@ -413,7 +432,15 @@ See Part 7. On a small, topically separated corpus, cosine already finds the rig
 
 ### `generate.py` — the grounded LLM call
 
-**Why this file exists.** Retrieval gave you four passages. Someone still has to write English. Two knobs live here that retrieval cannot provide: **citation discipline** and **permission to say I don’t know**. Which company hosts the model is **not** this file’s job — that is `llm.py`.
+**Why this file exists.** Retrieval gave you up to four passages. Someone still has to write English. The knobs that live here, and not in retrieval, are **citation discipline**, **permission to say I don’t know**, **which section text the prompt reads**, and **how a follow-up becomes a search string**. Which company hosts the model is **not** this file’s job — that is `llm.py`.
+
+**Follow-ups.** `answer(question)` with no history searches the typed string. `normalize_history` keeps completed user/assistant pairs only. It drops a trailing user item (so the question being asked is not in the conversation twice), clips each message to `HISTORY_MESSAGE_CHARS` (1500), and keeps at most `HISTORY_MAX_MESSAGES` (8, four pairs) and `HISTORY_MAX_CHARS` (6000), dropping the oldest pairs first. The page can show a longer thread than the model sees.
+
+When that list is non-empty, `retrieval_query` calls `complete(REWRITE_PROMPT, …, max_tokens=REWRITE_MAX_TOKENS)` (`80`). The rewriter must output one question and not answer it. `clean_rewrite` keeps the first line, strips one pair of wrapping quotes, and rejects empty text or anything longer than `RETRIEVAL_QUERY_MAX` (400). Any exception or rejected rewrite uses `fallback_query`: the previous user question, a space, and the current question, capped at 400 characters, with the current question kept intact. The assistant’s earlier answer is not embedded.
+
+`answer_stream` yields `status` / `rewriting` before that call, then `retrieving`. If the search string differs from what was typed, the retrieving event includes `query`, and the UI prints `Follow-up searched as: …`.
+
+`build_prompt` puts `Conversation so far` above the numbered excerpts when history exists. `SYSTEM_PROMPT` says those turns explain the referent, and that citation numbers in earlier answers belong to those turns.
 
 ### `llm.py` — vendor boundary
 
@@ -428,7 +455,7 @@ stream(system: str, user: str, cancel=None) -> Iterator[str]
 
 | `LLM_PROVIDER` | Driver (actual HTTP) | Default model | Key | Default `LLM_BASE_URL` |
 |----------------|----------------------|---------------|-----|------------------------|
-| `anthropic` | Anthropic Messages | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | SDK default |
+| `anthropic` | Anthropic Messages | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | SDK default |
 | `openai` | Chat Completions | `gpt-4o-mini` | `OPENAI_API_KEY` or `LLM_API_KEY` | `https://api.openai.com/v1` |
 | `ollama` | Chat Completions | `llama3.2` | dummy `ollama` if unset | `http://127.0.0.1:11434/v1` |
 | `xai` | Chat Completions | `grok-4.5` | `XAI_API_KEY` or `LLM_API_KEY` | `https://api.x.ai/v1` |
@@ -444,7 +471,7 @@ LLM_API_KEY=...
 
 If `LLM_PROVIDER` is unset but `ANTHROPIC_API_KEY` is set, we keep the old Anthropic default so existing commands still work.
 
-**`.env`:** copy `.env.example` → `.env`, uncomment **one** block. `llm.py` loads `.env` from the same directory as the file (`Path(__file__).parent`), not from cwd. Variables already in your shell win (`load_dotenv(..., override=False)`). `.env` is gitignored. `python llm.py` prints provider/driver/model (not the key).
+**`.env`:** copy `.env.example` → `.env`, uncomment **one** provider block. `llm.py`, `chunk.py`, and `server.py` each call `load_dotenv` on `.env` next to the scripts (`Path(__file__).parent`), not the shell cwd. Variables already in your shell win (`override=False`). `.env` is gitignored. `python llm.py` prints provider/driver/model (not the key). `HOST` and `PORT` are optional; unset, `server.py` listens on `127.0.0.1` port `8000`.
 
 **What is local vs remote.** Nomic, FAISS, and the reranker always run on your laptop. `LLM_PROVIDER=ollama` only replaces the *writer*. Eval never calls `llm.py`.
 
@@ -465,22 +492,24 @@ Sent as the `system` role, not mixed into the user message. That is the API’s 
 3. Cite `[1]` or `[1][3]` on every factual claim.
 4. If the excerpts are insufficient, say the `NO_INFO` sentence instead of guessing.
 5. No outside knowledge, even if you (the model) are “sure.”
-6. Be concise.
+6. When a conversation is included, use it to resolve the referent. Cite only this request’s excerpts.
+7. Be concise, in Markdown. Citation markers stay plain text, not links.
 
 **Why citations.** They do not guarantee truth. They make a lie *checkable*. An interviewer who says “how do you reduce hallucinations?” should hear: retrieve the right chunks, constrain the prompt, require citations, refuse when empty — and still verify, because the model can cite a chunk and drift.
 
 **`build_prompt`**
 
-Numbering is 1-based and **is the citation scheme**. `[1]` means “first chunk in *this* prompt,” not `chunk_id`. Order is rerank order. If you shuffled chunks, citation numbers would point at different text.
+Numbering is 1-based and **is the citation scheme**. `[1]` means “first excerpt in *this* prompt,” not `chunk_id`. Order is the shipped order: rerank when the best logit is at least 0, otherwise vector order. If you shuffled chunks, citation numbers would point at different text. An earlier turn’s `[1]` belongs to that turn. The system prompt says to cite only the excerpts in this request.
 
 Each block includes `source_file` so the model can mention the policy name, but the UI/CLI also list sources from the `RetrievedChunk` objects themselves. The UI does not parse `[1]` out of the answer; it shows the `sources` event, which arrived *before* tokens.
 
 **`answer()` — CLI path**
 
-1. `retrieve(question, top_k=4)`
-2. If no chunks: return `NO_INFO` without calling the API (save money, skip a useless call).
-3. `complete(SYSTEM_PROMPT, prompt)` in `llm.py`.
-4. Return `(text, chunks)`.
+1. `normalize_history`, then `retrieval_query` when there is history.
+2. `prompt_excerpts(retrieve(query, top_k=4))`.
+3. If no chunks: return `NO_INFO` without calling the API (save money, skip a useless call).
+4. `complete(SYSTEM_PROMPT, prompt)` in `llm.py`. `complete` defaults to `MAX_TOKENS` (500) and accepts `max_tokens`; the rewrite uses 80.
+5. Return `(text, chunks)`. The chunks are the prompt excerpts, so a citation lines up with what the model read.
 
 Blocking: the process sits until the full answer exists.
 
@@ -490,8 +519,9 @@ Same retrieve and same prompt. Different delivery:
 
 | Event | When | Why the UI cares |
 |-------|------|------------------|
-| `status` / `retrieving` | Before search | User sees that RAG is not “the model thinking”; search is a real stage |
-| `sources` | After retrieve | Teaching surface: these are the 4 excerpts |
+| `status` / `rewriting` | Follow-up only, before the rewrite call | The UI says “Reading the conversation…” |
+| `status` / `retrieving` | Before search | User sees that RAG is not “the model thinking”; search is a real stage. Includes `query` when the search text differs from what was typed |
+| `sources` | After retrieve and `prompt_excerpts` | Teaching surface: these excerpts, each `expanded` or not, plus `ranking` |
 | `error` + `NO_INFO` | Empty retrieve | No LLM call |
 | `error` + `LLMConfigError` | After sources | You still *saw* retrieval; missing `LLM_PROVIDER` / key / Ollama |
 | `status` / `generating` | Before stream | Second stage |
@@ -499,7 +529,7 @@ Same retrieve and same prompt. Different delivery:
 | `done` | Stream finished cleanly | Re-enable the form |
 | `error` / generation failed | API / Ollama exception | Partial tokens remain |
 
-`chunk_preview` collapses whitespace and caps at 240 characters so the pipeline panel is readable. The **full** chunk text still goes to the LLM; only the UI preview is truncated.
+`chunk_preview` collapses whitespace and caps at 240 characters so the excerpt card is readable. The **full** excerpt still goes to the LLM; only the UI preview is truncated. After expansion, that preview is the start of `section_text`, not a separate shorter chunk.
 
 `cancel` is a `threading.Event`. If the browser disconnects, `server.py` sets it; the generator stops requesting more tokens. We do not bill forever for a closed tab.
 
@@ -509,7 +539,7 @@ Same retrieve and same prompt. Different delivery:
 
 ### `cli.py` — the original product
 
-Takes `sys.argv`, calls `answer()`, prints Q, A, and `[n] source_file`. No streaming, no HTTP. This is the path you use to prove the pipeline without a browser.
+Takes `sys.argv`, calls `answer(question)` with no history, and prints Q, A, and `[n] source_file`. The header says `reranker` or `vector search (reranker not confident)`, from `rank_source`. No streaming, no HTTP, no follow-up rewrite. This is the path you use to prove the pipeline without a browser.
 
 It is intentionally tiny. If the CLI and the UI ever disagreed, retrieval/generation would have been copied in two places. They are not: both call `generate.py`.
 
@@ -550,18 +580,27 @@ That is not “RAG is solved.” It is “a small, topically distinct handbook i
 - `_pump` runs `answer_stream` on a **daemon thread** because retrieve (PyTorch) is blocking. Events go onto an `asyncio.Queue`; the async coroutine `send_json`s them. If this ran on the event loop, one user’s embedding forward pass would freeze every other socket.
 - Disconnect → `cancel.set()`.
 
-Uvicorn serves `127.0.0.1:8000`. This is a learning server, not a deployment.
+`server.py` reads `HOST` and `PORT` from the environment when `main()` starts. Unset, Uvicorn listens on `127.0.0.1:8000`, so only this computer can open the page. `HOST=0.0.0.0` accepts connections from other machines on the same network; those machines open `http://<this-mac-lan-ip>:PORT`. A `PORT` that is not an integer from 1 through 65535 exits before Uvicorn starts. This is a learning server, not a deployment. There is no login, so `HOST=0.0.0.0` exposes Ask and Library, including Approve and Re-index.
 
 **`static/index.html`**
 
 One page: a thread of turns, a composer stuck to the bottom, connection state beside Ask and New chat. Each turn keeps the excerpts that supported that answer.
 
 - Sends `{ "question", "history" }`. `history` is the committed questions and answers already on screen. The first question sends an empty list.
-- A follow-up first shows “Reading the conversation…”. `generate.py` rewrites that follow-up into one standalone search question, then retrieves with that string. The answer prompt still contains the earlier turns, and citation numbers apply only to this turn’s excerpts. If the rewrite fails, search uses the previous user question plus the new one.
-- On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). A rewritten search is labeled `Follow-up searched as: …`.
-- On `token`, appends to that turn’s Markdown buffer and re-renders it as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible.
+- A follow-up first shows “Reading the conversation…”. `generate.py` rewrites that follow-up into one standalone search question, then retrieves with that string. The answer prompt still contains the recent turns (8 messages, 1,500 characters each, 6,000 total). The page keeps showing the whole thread. Citation numbers apply only to this turn’s excerpts. If the rewrite fails, search uses the previous user question plus the new one, capped at 400 characters.
+- On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). The meta line is `[n] file · section` or `[n] file · excerpt`. A note says “Ordered by the reranker.” or “Reranker scores were below 0, so these stay in vector-search order.” A rewritten search is labeled `Follow-up searched as: …`.
+- On `token`, appends to that turn’s Markdown buffer and re-renders it as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible. Answer headings use `text-transform: none` so they do not inherit the panel label style.
 - The thread lives in `sessionStorage` (`ask-northwind-chat`) so a reload keeps the session. **New chat** deletes it. The server stores nothing, and there is no list of old conversations.
-- `{ "cancel": true }` stops an answer still in flight. Reconnect is manual. No retry loop.
+- `GET /api/status` sets `stale` when any library row is not `indexed`. Ask then shows: “The library has changed since the last Re-index. Answers still use the previous index.” The link goes to `/library`.
+- `{ "cancel": true }` stops an answer still in flight. Reconnect is manual. The offline line is “Not connected. Use Reconnect.” No retry loop.
+
+**`static/library.html`, `review.py`, `format_md.py`**
+
+Library is a second page, not a panel on Ask. Upload and delete stage a JSON proposal immediately under `review/` (gitignored, so the chunker never indexes it). Edit opens the live file in the editor and does not write anything until **Save draft**, **Format**, or **Approve**. Format saves the textarea first, then calls the model. One path has one open proposal; a later submit replaces it. Nothing reaches `DOCS_DIR` until Approve.
+
+Upload runs `format_markdown` (`FORMAT_MAX_TOKENS = 4096`) through the same `complete()` Ask uses. The formatter must return one `#` title and `##` sections, with no `###`. A bad result, a truncation, or a missing model stores the raw text as a hand edit (`origin` `manual`) and keeps the error on the proposal. **Save draft** writes the textarea and does not call the model. The Format button saves that textarea first, then calls `POST /api/review/{path}/format`. A bad result returns 422 and does not replace the saved body. Upload is the path that keeps the raw file and the error message when formatting fails before a proposal exists. **Approve** writes or deletes the live file, then drops the proposal. If the live mtime no longer matches `base_mtime_ns`, Approve returns 409 and writes nothing. **Reject** drops the proposal. There is no login. The Approve button is the human gate.
+
+`list_docs` states are `indexed`, `changed` (indexed, mtime after `indexed_at`), `not_indexed`, and `missing_on_disk`. The list stays available during a rebuild. Ask, upload, delete, and review mutations return 409 while Re-index holds the lock. The service worker cache name is `ask-northwind-v9`. It precaches `/`, `/library`, and `/app.css`, and never caches `/ws` or `/api/*`. Offline Library copy is “You're offline.”
 
 **Python is a fine language for this.** The embedding and FAISS ecosystem is Python-first. FastAPI’s WebSocket support is enough. The RAG core would look the same behind any other transport (SSE, gRPC, a job queue).
 
@@ -572,8 +611,13 @@ One page: a thread of turns, a composer stuck to the bottom, connection state be
 | File | Role |
 |------|------|
 | `requirements.txt` | `sentence-transformers`, `faiss-cpu`, `anthropic`, `openai`, `python-dotenv`, `numpy`, `fastapi`, `uvicorn[standard]` |
-| `llm.py` | Anthropic vs OpenAI-compatible `complete` / `stream` |
-| `.env.example` | Commented sample for each provider; copy to `.env` |
+| `llm.py` | Anthropic vs OpenAI-compatible `complete` / `stream`. `complete` accepts `max_tokens`; a length stop raises `LLMTruncatedError` |
+| `review.py` | Proposal JSON in `review/` until Approve or Reject |
+| `format_md.py` | LLM rewrite into one `#` title and `##` sections; rejects a bad result |
+| `library.py` | Safe names, list/read/atomic write/delete under `DOCS_DIR`; `changed` when mtime is after `indexed_at` |
+| `static/library.html` | Review queue, editor, file list, upload, delete, Re-index |
+| `static/sw.js` | Shell cache `ask-northwind-v9` |
+| `.env.example` | Commented sample: one provider, optional `DOCS_DIR`, optional `HOST` / `PORT`. Copy to `.env` |
 | `index/` | Built artifacts; gitignored |
 | `.venv/` | Python 3.12 environment; gitignored. 3.12 not 3.14 because FAISS / sentence-transformers wheels lag on brand-new CPython |
 | `README.md` | Operator’s manual + the eval story + production talking points we did not implement |
@@ -590,7 +634,11 @@ Interviewers love “why 4, not 5?” The honest answer is: **defaults that are 
 | `CHUNK_OVERLAP` | 150 chars | Boundary sentences survive; more duplicate vectors | Cheaper index; more split facts |
 | `candidate_pool` | 20 | Reranker sees more; slower; more chance the true hit is in the pool | Faster; more risk the true hit never reaches rerank |
 | `top_k` to the LLM | 4 | More evidence; more prompt noise, cost, and distraction | Cheaper, cleaner; may drop a needed section |
-| `max_tokens` | 500 | Longer answers | Truncated answers |
+| `max_tokens` | 500 for answers, 80 for a follow-up rewrite, 4096 for Library formatting | Longer answers or a longer rewrite | Truncated answers; a truncated format is rejected |
+| `RERANK_TRUST` | 0.0 | Rerank order ships on a weaker logit | More questions stay in vector order, including real rerank wins |
+| `RERANK_FLOOR` / `RERANK_MARGIN` | 0.0 / 1.0 | More hits expand into section text | Only the very top hit expands |
+| `SECTION_PROMPT_MAX` | 4000 body chars | The model reads more of a long section | A long section is cut off sooner in the prompt |
+| `HISTORY_MAX_MESSAGES` / `HISTORY_MAX_CHARS` | 8 messages / 6000 chars | The answer prompt sees more of the thread | A follow-up loses older turns sooner |
 | Embedding dim | 768 (Nomic v1.5) | Full vector; v1.5 can truncate (Matryoshka) for speed | Shorter vectors: faster, usually slightly worse recall |
 | `DOCUMENT_PREFIX` / `QUERY_PREFIX` | `search_document: ` / `search_query: ` | — (fixed by the model’s training) | Omitting them does not crash; it just retrieves worse |
 
@@ -619,7 +667,7 @@ A *different* query is a real rerank win, and the gate keeps it:
 - Vector search: `onboarding_guide.md` (mentions enrollment in passing).
 - Rerank: `benefits_enrollment_guide.md` (correct), best logit about +0.35. That is above 0, so the shipped order is the rerank order.
 
-**Ungated, the @1 number does not move; the mistakes swap.** The gate is how the shipped path uses that fact without throwing the reranker away. `eval.py` still prints both misses. Run `python retrieve.py` on the laptop question and you will see the ungated flip and the shipped vector order in one printout.
+**Ungated, the @1 number does not move; the mistakes swap.** The gate is how the shipped path uses that fact without throwing the reranker away. `eval.py` still prints both misses. Run `python retrieve.py` on the laptop question and you will see the ungated flip and the shipped vector order in one printout. Ask shows the equipment policy and the line “Reranker scores were below 0, so these stay in vector-search order.” It does not retrieve the IT-security chunk as the top hit. Because that best logit is below 0, the laptop prompt also keeps the 800-character windows.
 
 ### 3. Right doc, wrong sentence
 
@@ -659,7 +707,7 @@ Retrieval-augmented generation: fetch relevant pieces of a knowledge base, put t
 
 **“Walk me through your pipeline.”**
 
-Markdown → heading-aware chunks with overlap and a title prefix → Nomic v1.5 embeddings (`search_document:` / `search_query:`), L2-normalized → FAISS IndexFlatIP → query embed → top 20 → MiniLM cross-encoder rerank → keep that order only if the best logit is ≥ 0, else vector order → top 4 → grounded system prompt and `[n]` citations → `llm.py` (Anthropic or OpenAI-compatible) → CLI or WebSocket UI. Eval is recall@k on 20 labeled questions, retrieval only, three columns.
+Markdown → heading-aware chunks with overlap and a title prefix → Nomic v1.5 embeddings (`search_document:` / `search_query:`), L2-normalized → FAISS IndexFlatIP → query embed → top 20 → MiniLM cross-encoder rerank → keep that order only if the best logit is ≥ 0, else vector order → top 4 → a strong hit may become its `##` section → grounded system prompt and `[n]` citations. A follow-up is rewritten into one search question first; the recent turns stay in the answer prompt. Library edits wait for Approve, then Re-index. `llm.py` is Anthropic or OpenAI-compatible. The UI is one browser-tab thread. Eval is recall@k on 20 labeled questions, retrieval only, three columns, and it does not expand sections.
 
 **“Why not just use a bigger context window?”**
 
@@ -715,13 +763,13 @@ Hybrid BM25 + vectors (exact tokens: error codes, SKUs). Multi-query expansion b
 
 **“Show me a bug in your own system.”**
 
-Ungated rerank prefers IT security over equipment return for the laptop query; the gate keeps vector order because that logit is negative. Eval labels files not spans. We still return neighbors when every score is negative — the gate chooses order, it does not abstain. The index can still be stale; Ask and Library now say so, and search changes only on Re-index. Nomic prefixes are easy to drop on a rewrite. Small local models skip citations. The chat window keeps four exchanges and the server does not remember you after New chat. That’s the demo, not a cover-up.
+Ungated rerank prefers IT security over equipment return for the laptop query; the gate keeps vector order because that logit is negative, and nothing in that list expands. Eval labels files not spans. We still return neighbors when every score is negative — the gate chooses order, it does not abstain. The index can still be stale; Ask and Library say so, and search changes only on Re-index. Nomic prefixes are easy to drop on a rewrite. Small local models skip citations. The page can show a long thread, but the prompt keeps four exchanges and 6,000 characters, and the server does not remember you after New chat. That’s the demo, not a cover-up.
 
 ---
 
 ## Part 9 — What we deliberately did not build
 
-The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build.
+The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build. The review queue, section text in the prompt, the rerank confidence gate, the stale-index note, and one-question follow-up rewrite are already in the repo. The table is what is still out.
 
 | Not built | Why it exists in real systems | Why it’s omitted here |
 |-----------|-------------------------------|------------------------|
@@ -742,7 +790,7 @@ If you implement those later, keep `chunk.py` / `retrieve.py` / `generate.py` / 
 2. Run `python retrieve.py "How many PTO days do I get per year?"` and show vector vs rerank lists.
 3. Run `python llm.py` to show which provider resolved, then `python cli.py "How many PTO days do I get per year?"` and show `[1]` next to `pto_policy.md`.
 4. In the UI, ask the same question and pause on the open **Excerpts** — “this is retrieval; the model has not written yet.” Ask “what about contractors?” next and show the standalone search line, then New chat.
-5. Ask the laptop-return question and, if rerank surfaces IT security, *celebrate it*: “this is why we measure.”
+5. Ask the laptop-return question in the UI. The excerpts should stay on the equipment policy, with the note that the reranker was below 0. Then run `python retrieve.py` on that question and show the ungated flip to IT security: “this is why the gate exists, and why eval still prints the ungated column.”
 6. Run `python eval.py` and say the three columns: 95% / 95% / 100% at rank 1, and 100% at 3. Name the two ungated misses.
 
 If you can do those six steps without notes, you can explain this application to anyone.

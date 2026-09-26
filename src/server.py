@@ -10,11 +10,13 @@ in retrieve.py / generate.py so the CLI and the UI share one brain.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from build_index import IndexBuildError, build
@@ -45,8 +47,29 @@ from retrieve import _load, reload as reload_index
 ROOT = Path(__file__).parent
 INDEX_PATH = ROOT / "index" / "chunks.faiss"
 STATIC_DIR = ROOT / "static"
+# Shell exports take precedence (override=False). Missing file is a no-op.
+load_dotenv(ROOT / ".env")
 HOST = "127.0.0.1"
 PORT = 8000
+
+
+def _listen_address() -> tuple[str, int]:
+    """Bind address for the Web UI.
+
+    HOST and PORT come from the environment (.env or the shell). A blank
+    value keeps this computer only, on port 8000.
+    """
+    host = (os.environ.get("HOST") or "").strip() or HOST
+    raw = (os.environ.get("PORT") or "").strip()
+    if not raw:
+        return host, PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        raise SystemExit(f"PORT must be an integer, got {raw!r}")
+    if not 1 <= port <= 65535:
+        raise SystemExit(f"PORT must be between 1 and 65535, got {port}")
+    return host, port
 
 
 def _require_index() -> None:
@@ -466,11 +489,12 @@ async def ws_ask(websocket: WebSocket) -> None:
 
 def main() -> None:
     _require_index()
+    host, port = _listen_address()
     try:
         import uvicorn
     except ImportError:
         sys.exit("fastapi/uvicorn not installed. Run: pip install -r requirements.txt")
-    uvicorn.run(app, host=HOST, port=PORT)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
