@@ -18,7 +18,17 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+from auth import (
+    COOKIE_NAME,
+    SESSION_IDLE_SECONDS,
+    is_public,
+    login,
+    logout,
+    reload_password,
+    require_lock_password,
+    touch,
+)
 from build_index import IndexBuildError, build
 from format_md import FormatError
 from generate import answer_stream
@@ -81,12 +91,56 @@ def _require_index() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    require_lock_password()
+    await asyncio.to_thread(reload_password)
     _require_index()
     await asyncio.to_thread(_load)
     yield
 
 
 app = FastAPI(title="Ask Northwind", lifespan=lifespan)
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=SESSION_IDLE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(COOKIE_NAME, path="/", samesite="lax")
+
+
+def _client_key(request: Request) -> str:
+    if request.client is None:
+        return "unknown"
+    return request.client.host.strip()
+
+
+@app.middleware("http")
+async def lock_middleware(request: Request, call_next):
+    if is_public(request.method, request.url.path):
+        return await call_next(request)
+    token = request.cookies.get(COOKIE_NAME, "")
+    result = await asyncio.to_thread(touch, token)
+    if result.state == "store_error":
+        return JSONResponse(
+            {"detail": "Could not store the session."}, status_code=500
+        )
+    if result.state != "ok":
+        response = JSONResponse({"detail": "Unauthorized."}, status_code=401)
+        if token:
+            _clear_session_cookie(response)
+        return response
+    response = await call_next(request)
+    _set_session_cookie(response, token)
+    return response
+
 
 _rebuilding = False
 _active_answers = 0
@@ -175,6 +229,61 @@ def library_page() -> FileResponse:
 @app.get("/app.css")
 def app_css() -> FileResponse:
     return FileResponse(STATIC_DIR / "app.css", media_type="text/css")
+
+
+@app.post("/api/session")
+async def api_login(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "Expected JSON body."}, status_code=400)
+    password = payload.get("password") if isinstance(payload, dict) else None
+    if not isinstance(password, str):
+        return JSONResponse({"detail": "Expected JSON body."}, status_code=400)
+    result = await asyncio.to_thread(login, password, _client_key(request))
+    if result.throttled:
+        return JSONResponse(
+            {"detail": "Too many attempts. Try again shortly."}, status_code=401
+        )
+    if result.store_error:
+        return JSONResponse(
+            {"detail": "Could not store the session."}, status_code=500
+        )
+    if result.token is None:
+        return JSONResponse({"detail": "Wrong password."}, status_code=401)
+    response = JSONResponse({"ok": True})
+    _set_session_cookie(response, result.token)
+    return response
+
+
+@app.post("/api/session/logout")
+async def api_logout(request: Request) -> JSONResponse:
+    token = request.cookies.get(COOKIE_NAME, "")
+    result = await asyncio.to_thread(logout, token)
+    if result.state == "store_error":
+        return JSONResponse(
+            {"detail": "Could not store the session."}, status_code=500
+        )
+    response = JSONResponse({"ok": True})
+    _clear_session_cookie(response)
+    return response
+
+
+@app.get("/api/session")
+async def api_session(request: Request) -> JSONResponse:
+    token = request.cookies.get(COOKIE_NAME, "")
+    result = await asyncio.to_thread(touch, token)
+    if result.state == "store_error":
+        return JSONResponse(
+            {"detail": "Could not store the session."}, status_code=500
+        )
+    if result.state != "ok":
+        response = JSONResponse({"detail": "Unauthorized."}, status_code=401)
+        _clear_session_cookie(response)
+        return response
+    response = JSONResponse({"ok": True})
+    _set_session_cookie(response, token)
+    return response
 
 
 @app.get("/api/status")
@@ -488,6 +597,7 @@ async def ws_ask(websocket: WebSocket) -> None:
 
 
 def main() -> None:
+    require_lock_password()
     _require_index()
     host, port = _listen_address()
     try:
