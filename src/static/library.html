@@ -94,6 +94,8 @@
     let rebuilding = false;
     let proposals = [];
     let openTarget = null;
+    // Bumped on reveal and showLock so an older sessionOk cannot apply.
+    let sessionGen = 0;
 
     function encPath(name) {
       return name.split("/").map(encodeURIComponent).join("/");
@@ -142,8 +144,10 @@
     }
 
     function showLock(message) {
+      sessionGen += 1;
       document.body.classList.add("locked");
       stopRebuildPoll();
+      lockReconnect.hidden = true;
       lockStatus.textContent = message;
       lockStatus.className = message ? "err" : "";
       lockPassword.focus();
@@ -167,7 +171,15 @@
       return true;
     }
 
+    async function readSession() {
+      const gen = sessionGen;
+      const ok = await sessionOk();
+      if (gen !== sessionGen) return { stale: true, ok: null };
+      return { stale: false, ok };
+    }
+
     function reveal() {
+      sessionGen += 1;
       document.body.classList.remove("locked");
       lockReconnect.hidden = true;
       lockStatus.textContent = "";
@@ -674,6 +686,7 @@
     async function init() {
       if (document.body.classList.contains("locked")) return;
       if (isOffline()) {
+        if (rebuilding) setRebuildLock(false);
         setLibStatus(OFFLINE_MSG, "err");
         reviewStatus.textContent = OFFLINE_MSG;
         reviewStatus.className = "err";
@@ -688,6 +701,8 @@
           setRebuildLock(true);
           setLibStatus("Rebuilding…");
           startRebuildPoll();
+        } else if (rebuilding) {
+          setRebuildLock(false);
         }
       } catch (err) {
         if (document.body.classList.contains("locked")) return;
@@ -735,7 +750,9 @@
       }
     });
     lockReconnect.addEventListener("click", async () => {
-      handleSession(await sessionOk());
+      const read = await readSession();
+      if (read.stale) return;
+      handleSession(read.ok);
     });
     logoutBtn.addEventListener("click", async () => {
       try {
@@ -751,7 +768,9 @@
     });
     lockPassword.focus();
     async function boot() {
-      handleSession(await sessionOk());
+      const read = await readSession();
+      if (read.stale) return;
+      handleSession(read.ok);
     }
     boot();
 

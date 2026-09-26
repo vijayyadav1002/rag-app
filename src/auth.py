@@ -163,7 +163,9 @@ def login(
     """Use the cached password and stamp. Do not read LOCK_PASSWORD.
 
     Before the first reload_password(), return store_error and write nothing.
-    Do not drop well-formed rows except MAX_SESSIONS eviction (oldest last_access).
+    A successful login drops expired and wrong-stamp rows before the
+    MAX_SESSIONS cap and puts those hashes on evicted_keys. It does not
+    drop other live tokens.
     """
     if now is None:
         now = int(time.time())
@@ -264,8 +266,13 @@ def _clear_client(client_key: str) -> None:
 
 def _insert_session(now: int) -> LoginResult:
     loaded = _read_file()
-    rows = dict(loaded.rows)
-    evicted: list[str] = []
+    rows: dict[str, dict] = {}
+    evicted: list[str] = list(loaded.malformed_keys)
+    for key, row in loaded.rows.items():
+        if _is_live(row, now):
+            rows[key] = row
+        else:
+            evicted.append(key)
     while len(rows) >= MAX_SESSIONS and rows:
         oldest = min(rows, key=lambda item: (rows[item]["last_access"], item))
         evicted.append(oldest)

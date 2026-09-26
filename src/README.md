@@ -248,7 +248,7 @@ being able to discuss:
 | `static/library.html` | Library UI: review queue, editor, list, upload, delete, Re-index |
 | `static/app.css` | Shared theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
-| `static/sw.js` | Cache the UI shell only (`ask-northwind-v10`; not `/ws` or `/api/*`) |
+| `static/sw.js` | Cache the UI shell only (`ask-northwind-v11`; not `/ws` or `/api/*`) |
 
 ## Web UI
 

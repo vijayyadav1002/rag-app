@@ -135,6 +135,7 @@ def _clear_session_cookie(response: Response) -> None:
 
 # Accepted sockets, keyed by the session-file hash. Not written to sessions.json.
 # One threading.Event per connection, shared with _pump and drop_sockets.
+# eq=False keeps identity hashing. A default dataclass is unhashable, so register would raise.
 @dataclass(eq=False)
 class LiveSocket:
     websocket: WebSocket
@@ -195,11 +196,11 @@ def note_deadline(key: str, last_access: int) -> None:
 
 
 def _positive_wait() -> float | None:
-    """Soonest future wake, or None when there is nothing to wait for.
+    """Soonest future wake, or None when nothing is registered.
 
-    Never returns 0. A past deadline is skipped so a deleted row cannot
-    busy-loop the process. A key whose last sweep was store_error waits
-    at most 60 seconds, including when its remaining time is already past.
+    Never returns 0. None is only for an empty registry. A past deadline
+    is not a busy-loop: if a socket or deadline is still registered and no
+    delay is positive, wait 60 seconds (the store_error cap) instead.
     """
     if not _deadlines and not _live:
         return None
@@ -215,10 +216,10 @@ def _positive_wait() -> float | None:
         elif remaining > 0:
             delays.append(remaining)
     if not delays:
-        return None
+        return 60.0
     soonest = min(delays)
     if soonest <= 0:
-        return None
+        return 60.0
     return soonest
 
 
