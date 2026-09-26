@@ -11,7 +11,7 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <link rel="stylesheet" href="/app.css" />
 </head>
-<body>
+<body class="locked">
   <main>
     <header class="site-header">
       <h1><a href="/">Ask Northwind</a></h1>
@@ -19,6 +19,7 @@
         <a href="/" class="active">Ask</a>
         <a href="/library">Library</a>
       </nav>
+      <button type="button" class="ghost" id="logout">Log out</button>
     </header>
     <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes. A follow-up keeps this conversation. New chat starts a fresh session.</p>
     <p id="index-note" class="index-note" hidden></p>
@@ -35,6 +36,17 @@
         <button type="button" class="ghost" id="reconnect">Reconnect</button>
       </div>
     </form>
+    <section id="lock" class="panel">
+      <h2>Locked</h2>
+      <p>Enter the master password to use Ask and Library.</p>
+      <form id="lock-form" method="post" action="/api/session">
+        <input id="lock-password" type="password" autocomplete="current-password"
+               aria-label="Password" />
+        <button type="submit" id="unlock">Unlock</button>
+      </form>
+      <button type="button" class="ghost" id="lock-reconnect" hidden>Reconnect</button>
+      <p id="lock-status"></p>
+    </section>
   </main>
   <script>
     const form = document.getElementById("ask-form");
@@ -46,8 +58,17 @@
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
     const indexNote = document.getElementById("index-note");
+    const logoutBtn = document.getElementById("logout");
+    const lockForm = document.getElementById("lock-form");
+    const lockPassword = document.getElementById("lock-password");
+    const unlockBtn = document.getElementById("unlock");
+    const lockReconnect = document.getElementById("lock-reconnect");
+    const lockStatus = document.getElementById("lock-status");
 
     const STORAGE_KEY = "ask-northwind-chat";
+    const SESSION_ENDED = "Session ended. Enter the password.";
+    const STORE_MSG = "Could not store the session.";
+    const OFFLINE_MSG = "Not connected. Use Reconnect.";
     const NO_INFO = "I don't have information about that in the available documents.";
     const REBUILD_MSG = "Index is rebuilding. Try again when it finishes.";
     const STAGE = {
@@ -57,6 +78,7 @@
     };
 
     let ws = null;
+    let suppressClose = false;
     let answering = false;
     let rebuilding = false;
     let epoch = 0;
@@ -404,14 +426,21 @@
     }
 
     function startRebuildPoll() {
+      if (document.body.classList.contains("locked")) return;
       if (pollTimer !== null) return;
       pollTimer = setTimeout(pollRebuild, 1000);
     }
 
     async function pollRebuild() {
       pollTimer = null;
+      if (document.body.classList.contains("locked")) return;
       try {
         const res = await fetch("/api/status");
+        if (document.body.classList.contains("locked")) return;
+        if (res.status === 401) {
+          showLock(SESSION_ENDED);
+          return;
+        }
         const body = await res.json().catch(() => ({}));
         setIndexNote(Boolean(body.stale));
         if (body.rebuilding) {
@@ -422,38 +451,150 @@
         setRebuildLock(false);
         if (!answering) setStatus("Ready", "idle");
       } catch (err) {
+        if (document.body.classList.contains("locked")) return;
         startRebuildPoll();
       }
     }
 
     async function checkRebuildOnLoad() {
+      if (document.body.classList.contains("locked")) return;
       try {
         const res = await fetch("/api/status");
+        if (document.body.classList.contains("locked")) return;
+        if (res.status === 401) {
+          showLock(SESSION_ENDED);
+          return;
+        }
         const body = await res.json().catch(() => ({}));
         setIndexNote(Boolean(body.stale));
         if (body.rebuilding) {
           setRebuildLock(true);
           startRebuildPoll();
+        } else if (rebuilding) {
+          setRebuildLock(false);
+          if (!answering) setStatus("Ready", "idle");
         }
       } catch (err) {
         // Idle or offline: do not poll.
       }
     }
 
+    function showLock(message) {
+      document.body.classList.add("locked");
+      stopRebuildPoll();
+      lockStatus.textContent = message;
+      lockStatus.className = message ? "err" : "";
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        // Set before close so onclose does not call showLock again.
+        suppressClose = true;
+        ws.close();
+      }
+      lockPassword.focus();
+    }
+
+    async function sessionOk() {
+      try {
+        const res = await fetch("/api/session", { cache: "no-store" });
+        if (res.status === 500) return "store";
+        if (res.status === 200) return true;
+        if (res.status === 401) return false;
+        return null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function startAsk() {
+      connect();
+      checkRebuildOnLoad();
+      input.focus();
+    }
+
+    function reveal() {
+      document.body.classList.remove("locked");
+      lockReconnect.hidden = true;
+      lockStatus.textContent = "";
+      lockStatus.className = "";
+      startAsk();
+    }
+
+    function handleSession(ok) {
+      if (ok === "store") {
+        if (document.body.classList.contains("locked")) {
+          lockStatus.textContent = STORE_MSG;
+          lockStatus.className = "err";
+          lockReconnect.hidden = true;
+        } else {
+          setStatus(STORE_MSG, "err");
+        }
+        return;
+      }
+      if (ok === true) {
+        reveal();
+        return;
+      }
+      if (ok === false) {
+        lockStatus.textContent = "";
+        lockStatus.className = "";
+        lockReconnect.hidden = true;
+        lockPassword.focus();
+        return;
+      }
+      lockStatus.textContent = OFFLINE_MSG;
+      lockStatus.className = "err";
+      lockReconnect.hidden = false;
+      lockPassword.focus();
+    }
+
     function connect() {
+      if (document.body.classList.contains("locked")) return;
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
       }
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(`${proto}://${location.host}/ws`);
-      ws.onopen = () => setConn("connected");
+      ws.onopen = async () => {
+        setConn("connected");
+        const ok = await sessionOk();
+        if (ok === false) {
+          showLock(SESSION_ENDED);
+          return;
+        }
+        if (ok === "store" && !document.body.classList.contains("locked")) {
+          setStatus(STORE_MSG, "err");
+        }
+      };
       ws.onerror = () => setConn("error");
-      ws.onclose = () => {
+      ws.onclose = async (event) => {
         setConn("disconnected");
         setBusy(false);
+        if (suppressClose) {
+          suppressClose = false;
+          return;
+        }
+        if (event.code === 1008) {
+          if (!document.body.classList.contains("locked")) showLock(SESSION_ENDED);
+          return;
+        }
+        const ok = await sessionOk();
+        if (ok === "store") {
+          setStatus(STORE_MSG, "err");
+          return;
+        }
+        if (ok === false) {
+          showLock(SESSION_ENDED);
+          return;
+        }
+        if (ok === null) {
+          if (!rebuilding) setStatus(OFFLINE_MSG, "err");
+          return;
+        }
         if (!rebuilding) setStatus("Ready", "idle");
       };
-      ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+      ws.onmessage = (ev) => {
+        if (ev.data == null || ev.data === "") return;
+        handle(JSON.parse(ev.data));
+      };
     }
 
     function currentTurn() {
@@ -563,17 +704,72 @@
     });
     newChatBtn.addEventListener("click", newChat);
     reconnectBtn.addEventListener("click", connect);
+    lockForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      unlockBtn.disabled = true;
+      try {
+        const res = await fetch("/api/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: lockPassword.value }),
+        });
+        if (res.status === 200) {
+          lockPassword.value = "";
+          reveal();
+          return;
+        }
+        if (res.status === 401) {
+          const body = await res.json().catch(() => ({}));
+          lockStatus.textContent = typeof body.detail === "string" ? body.detail : "";
+          lockStatus.className = "err";
+          return;
+        }
+        if (res.status === 400) {
+          lockStatus.textContent = "Expected JSON body.";
+          lockStatus.className = "err";
+          return;
+        }
+        if (res.status === 500) {
+          lockStatus.textContent = STORE_MSG;
+          lockStatus.className = "err";
+        }
+      } catch (err) {
+        lockStatus.textContent = OFFLINE_MSG;
+        lockStatus.className = "err";
+        lockReconnect.hidden = false;
+      } finally {
+        unlockBtn.disabled = false;
+      }
+    });
+    lockReconnect.addEventListener("click", async () => {
+      handleSession(await sessionOk());
+    });
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/session/logout", { method: "POST" });
+        if (res.status === 200) {
+          showLock("");
+          return;
+        }
+        if (res.status === 500) setStatus(STORE_MSG, "err");
+      } catch (err) {
+        showLock(OFFLINE_MSG);
+      }
+    });
     committed = loadCommitted();
     committed.forEach(renderSaved);
     const lastDetails = threadEl.querySelector(".turn:last-child details");
     if (lastDetails) lastDetails.open = true;
     syncComposer();
-    connect();
-    checkRebuildOnLoad();
     document.addEventListener("visibilitychange", () => {
+      if (document.body.classList.contains("locked")) return;
       if (document.visibilityState === "visible") checkRebuildOnLoad();
     });
-    input.focus();
+    lockPassword.focus();
+    async function boot() {
+      handleSession(await sessionOk());
+    }
+    boot();
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js");

@@ -44,9 +44,27 @@ h1 {
   color: inherit;
   text-decoration: none;
 }
+.site-header nav { margin-left: auto; }
+#logout { align-self: center; }
 .site-header + .panel {
   margin-top: 1.4rem;
 }
+body.locked #thread,
+body.locked #ask-form,
+body.locked #index-note,
+body.locked .lede,
+body.locked #review-panel,
+body.locked #library,
+body.locked #logout { display: none; }
+body:not(.locked) #lock { display: none; }
+#lock { margin-top: 1.4rem; }
+#lock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+#lock-password { width: 100%; }
+#lock-status.err { color: var(--err); }
 nav {
   display: flex;
   gap: 1.25rem;
@@ -145,8 +163,8 @@ nav a.active {
   font-size: 0.92rem;
 }
 .turn .chunks { margin-top: 0.65rem; }
-input[type="text"] {
-  flex: 1;
+input[type="text"],
+#lock-password {
   background: var(--paper);
   border: 1px solid var(--line);
   color: var(--ink);
@@ -154,7 +172,9 @@ input[type="text"] {
   font: inherit;
   border-radius: 4px;
 }
-input[type="text"]:focus {
+input[type="text"] { flex: 1; }
+input[type="text"]:focus,
+#lock-password:focus {
   outline: 2px solid var(--brass);
   outline-offset: 1px;
 }

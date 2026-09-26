@@ -11,7 +11,7 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <link rel="stylesheet" href="/app.css" />
 </head>
-<body>
+<body class="locked">
   <main>
     <header class="site-header">
       <h1><a href="/">Ask Northwind</a></h1>
@@ -19,6 +19,7 @@
         <a href="/">Ask</a>
         <a href="/library" class="active">Library</a>
       </nav>
+      <button type="button" class="ghost" id="logout">Log out</button>
     </header>
 
     <section class="panel" id="review-panel">
@@ -47,6 +48,17 @@
         <button type="button" id="reindex">Re-index</button>
       </div>
     </section>
+    <section id="lock" class="panel">
+      <h2>Locked</h2>
+      <p>Enter the master password to use Ask and Library.</p>
+      <form id="lock-form" method="post" action="/api/session">
+        <input id="lock-password" type="password" autocomplete="current-password"
+               aria-label="Password" />
+        <button type="submit" id="unlock">Unlock</button>
+      </form>
+      <button type="button" class="ghost" id="lock-reconnect" hidden>Reconnect</button>
+      <p id="lock-status"></p>
+    </section>
   </main>
   <script>
     const libStatus = document.getElementById("lib-status");
@@ -63,12 +75,21 @@
     const saveBtn = document.getElementById("save-draft");
     const approveBtn = document.getElementById("approve-draft");
     const reloadBtn = document.getElementById("reload-live");
+    const logoutBtn = document.getElementById("logout");
+    const lockForm = document.getElementById("lock-form");
+    const lockPassword = document.getElementById("lock-password");
+    const unlockBtn = document.getElementById("unlock");
+    const lockReconnect = document.getElementById("lock-reconnect");
+    const lockStatus = document.getElementById("lock-status");
     const STATE_LABEL = {
       indexed: "indexed",
       changed: "changed",
       not_indexed: "not indexed",
       missing_on_disk: "missing on disk",
     };
+    const SESSION_ENDED = "Session ended. Enter the password.";
+    const STORE_MSG = "Could not store the session.";
+    const OFFLINE_MSG = "You're offline.";
 
     let rebuilding = false;
     let proposals = [];
@@ -115,14 +136,80 @@
     }
 
     function startRebuildPoll() {
+      if (document.body.classList.contains("locked")) return;
       if (pollTimer !== null) return;
       pollTimer = setTimeout(pollRebuild, 1000);
     }
 
+    function showLock(message) {
+      document.body.classList.add("locked");
+      stopRebuildPoll();
+      lockStatus.textContent = message;
+      lockStatus.className = message ? "err" : "";
+      lockPassword.focus();
+    }
+
+    async function sessionOk() {
+      try {
+        const res = await fetch("/api/session", { cache: "no-store" });
+        if (res.status === 500) return "store";
+        if (res.status === 200) return true;
+        if (res.status === 401) return false;
+        return null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function sessionEnded(res) {
+      if (res.status !== 401) return false;
+      showLock(SESSION_ENDED);
+      return true;
+    }
+
+    function reveal() {
+      document.body.classList.remove("locked");
+      lockReconnect.hidden = true;
+      lockStatus.textContent = "";
+      lockStatus.className = "";
+      init();
+    }
+
+    function handleSession(ok) {
+      if (ok === "store") {
+        if (document.body.classList.contains("locked")) {
+          lockStatus.textContent = STORE_MSG;
+          lockStatus.className = "err";
+          lockReconnect.hidden = true;
+        } else {
+          setLibStatus(STORE_MSG, "err");
+        }
+        return;
+      }
+      if (ok === true) {
+        reveal();
+        return;
+      }
+      if (ok === false) {
+        lockStatus.textContent = "";
+        lockStatus.className = "";
+        lockReconnect.hidden = true;
+        lockPassword.focus();
+        return;
+      }
+      lockStatus.textContent = OFFLINE_MSG;
+      lockStatus.className = "err";
+      lockReconnect.hidden = false;
+      lockPassword.focus();
+    }
+
     async function pollRebuild() {
       pollTimer = null;
+      if (document.body.classList.contains("locked")) return;
       try {
         const res = await fetch("/api/status");
+        if (document.body.classList.contains("locked")) return;
+        if (sessionEnded(res)) return;
         const body = await res.json().catch(() => ({}));
         if (body.rebuilding) {
           setRebuildLock(true);
@@ -133,7 +220,8 @@
         setRebuildLock(false);
         await refreshAll();
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        if (document.body.classList.contains("locked")) return;
+        setLibStatus(OFFLINE_MSG, "err");
         startRebuildPoll();
       }
     }
@@ -269,6 +357,7 @@
       }
       try {
         const res = await fetch("/api/docs");
+        if (sessionEnded(res)) return;
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
           setLibStatus(body.detail || "Could not load documents.", "err");
@@ -302,6 +391,7 @@
       }
       try {
         const res = await fetch("/api/review");
+        if (sessionEnded(res)) return;
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
           reviewStatus.textContent = detail(body, "Could not load the queue.");
@@ -317,6 +407,7 @@
 
     async function refreshAll() {
       await refreshLibrary();
+      if (document.body.classList.contains("locked")) return;
       await refreshReview();
     }
 
@@ -326,6 +417,7 @@
       try {
         const res = await fetch("/api/docs/" + encPath(name), { method: "DELETE" });
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (res.status === 409) {
           setRebuildLock(true);
           setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
@@ -356,6 +448,7 @@
       try {
         const res = await fetch("/api/docs/" + encPath(name));
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (!res.ok) {
           setLibStatus(detail(body, "Could not open the file."), "err");
           return;
@@ -373,10 +466,15 @@
         body: JSON.stringify({ body: draft.value }),
       });
       const body = await res.json().catch(() => ({}));
+      if (res.status === 401) showLock(SESSION_ENDED);
       return { res, body };
     }
 
     function showEditorError(res, body, fallback) {
+      if (res.status === 401) {
+        showLock(SESSION_ENDED);
+        return;
+      }
       if (res.status === 409 && detail(body, "") === "Index is rebuilding. Try again when it finishes.") {
         setRebuildLock(true);
         editorStatus.textContent = "Index is rebuilding. Try again when it finishes.";
@@ -409,9 +507,11 @@
       if (isOffline()) { editorStatus.textContent = "You're offline."; editorStatus.className = "err"; return; }
       try {
         const saved = await putDraft();
+        if (saved.res.status === 401) return;
         if (!saved.res.ok) { showEditorError(saved.res, saved.body, "Save failed"); return; }
         const res = await fetch("/api/review/" + encPath(openTarget) + "/format", { method: "POST" });
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (!res.ok) { showEditorError(res, body, "Formatting failed"); return; }
         renderDocs(body.docs || []);
         renderReview(body.proposals || [], body.unreadable || 0);
@@ -429,10 +529,12 @@
       try {
         if (openTarget === name && !editor.hidden) {
           const saved = await putDraft();
+          if (saved.res.status === 401) return;
           if (!saved.res.ok) { showEditorError(saved.res, saved.body, "Save failed"); return; }
         }
         const res = await fetch("/api/review/" + encPath(name) + "/approve", { method: "POST" });
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (res.status === 409 && detail(body, "").indexOf("rebuilding") !== -1) {
           setRebuildLock(true);
           setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
@@ -458,6 +560,7 @@
       try {
         const res = await fetch("/api/review/" + encPath(name), { method: "DELETE" });
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (res.status === 409) {
           setRebuildLock(true);
           setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
@@ -484,6 +587,7 @@
       try {
         const res = await fetch("/api/docs/" + encPath(openTarget));
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (res.status === 404) {
           editorStatus.textContent = "No live file yet.";
           editorStatus.className = "err";
@@ -513,6 +617,7 @@
         const res = await fetch("/api/docs", { method: "POST", body: fd });
         fileInput.value = "";
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (res.status === 409) {
           setRebuildLock(true);
           setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
@@ -544,6 +649,7 @@
       try {
         const res = await fetch("/api/reindex", { method: "POST" });
         const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
         if (res.status === 409) {
           setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
           startRebuildPoll();
@@ -566,14 +672,17 @@
     });
 
     async function init() {
+      if (document.body.classList.contains("locked")) return;
       if (isOffline()) {
-        setLibStatus("You're offline.", "err");
-        reviewStatus.textContent = "You're offline.";
+        setLibStatus(OFFLINE_MSG, "err");
+        reviewStatus.textContent = OFFLINE_MSG;
         reviewStatus.className = "err";
         return;
       }
       try {
         const statusRes = await fetch("/api/status");
+        if (document.body.classList.contains("locked")) return;
+        if (sessionEnded(statusRes)) return;
         const status = await statusRes.json().catch(() => ({}));
         if (status.rebuilding) {
           setRebuildLock(true);
@@ -581,11 +690,70 @@
           startRebuildPoll();
         }
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        if (document.body.classList.contains("locked")) return;
+        setLibStatus(OFFLINE_MSG, "err");
       }
+      if (document.body.classList.contains("locked")) return;
       await refreshAll();
     }
-    init();
+
+    lockForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      unlockBtn.disabled = true;
+      try {
+        const res = await fetch("/api/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: lockPassword.value }),
+        });
+        if (res.status === 200) {
+          lockPassword.value = "";
+          reveal();
+          return;
+        }
+        if (res.status === 401) {
+          const body = await res.json().catch(() => ({}));
+          lockStatus.textContent = typeof body.detail === "string" ? body.detail : "";
+          lockStatus.className = "err";
+          return;
+        }
+        if (res.status === 400) {
+          lockStatus.textContent = "Expected JSON body.";
+          lockStatus.className = "err";
+          return;
+        }
+        if (res.status === 500) {
+          lockStatus.textContent = STORE_MSG;
+          lockStatus.className = "err";
+        }
+      } catch (err) {
+        lockStatus.textContent = OFFLINE_MSG;
+        lockStatus.className = "err";
+        lockReconnect.hidden = false;
+      } finally {
+        unlockBtn.disabled = false;
+      }
+    });
+    lockReconnect.addEventListener("click", async () => {
+      handleSession(await sessionOk());
+    });
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/session/logout", { method: "POST" });
+        if (res.status === 200) {
+          showLock("");
+          return;
+        }
+        if (res.status === 500) setLibStatus(STORE_MSG, "err");
+      } catch (err) {
+        showLock(OFFLINE_MSG);
+      }
+    });
+    lockPassword.focus();
+    async function boot() {
+      handleSession(await sessionOk());
+    }
+    boot();
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js");
