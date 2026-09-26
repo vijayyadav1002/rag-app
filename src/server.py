@@ -5,6 +5,10 @@ The server does not retrieve or prompt. It accepts a question plus earlier
 turns, iterates `answer_stream()`, and forwards JSON events. A cancel frame
 can arrive while that stream is still running. Retrieval and generation stay
 in retrieve.py / generate.py so the CLI and the UI share one brain.
+
+Logout and idle close an accepted socket without waiting for another
+frame. That socket's one cancel event stays set so the in-flight answer
+stops; only a later question on a socket that is still registered clears it.
 """
 
 from __future__ import annotations
@@ -13,7 +17,9 @@ import asyncio
 import os
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,11 +28,13 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from auth import (
     COOKIE_NAME,
     SESSION_IDLE_SECONDS,
+    classify_key,
     is_public,
     login,
     logout,
     reload_password,
     require_lock_password,
+    token_key,
     touch,
 )
 from build_index import IndexBuildError, build
@@ -95,7 +103,16 @@ async def lifespan(_app: FastAPI):
     await asyncio.to_thread(reload_password)
     _require_index()
     await asyncio.to_thread(_load)
-    yield
+    # After the index is loaded. Startup does not close sockets.
+    sweeper_task = asyncio.create_task(sweeper())
+    try:
+        yield
+    finally:
+        sweeper_task.cancel()
+        try:
+            await sweeper_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Ask Northwind", lifespan=lifespan)
@@ -116,6 +133,132 @@ def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(COOKIE_NAME, path="/", samesite="lax")
 
 
+# Accepted sockets, keyed by the session-file hash. Not written to sessions.json.
+# One threading.Event per connection, shared with _pump and drop_sockets.
+@dataclass(eq=False)
+class LiveSocket:
+    websocket: WebSocket
+    cancel: threading.Event
+    token_key: str
+
+
+_live: dict[str, set[LiveSocket]] = {}
+_deadlines: dict[str, int] = {}
+# Keys whose last sweep_once result was store_error. Not a connection event.
+_sweep_retry: set[str] = set()
+_wake = asyncio.Event()
+
+
+def register(key: str, websocket: WebSocket, cancel: threading.Event) -> None:
+    _live.setdefault(key, set()).add(LiveSocket(websocket, cancel, key))
+
+
+def unregister(websocket: WebSocket) -> None:
+    """Drop this socket. A no-op if drop_sockets already popped it."""
+    empty: list[str] = []
+    for key, sockets in _live.items():
+        gone = {item for item in sockets if item.websocket is websocket}
+        if gone:
+            sockets.difference_update(gone)
+        if not sockets:
+            empty.append(key)
+    for key in empty:
+        del _live[key]
+
+
+def still_registered(websocket: WebSocket) -> bool:
+    for sockets in _live.values():
+        for item in sockets:
+            if item.websocket is websocket:
+                return True
+    return False
+
+
+async def drop_sockets(key: str) -> None:
+    """Cancel and close every accepted socket for this hash. Do not clear()."""
+    sockets = _live.pop(key, None)
+    if not sockets:
+        return
+    for item in list(sockets):
+        item.cancel.set()
+        try:
+            await item.websocket.close(code=1008)
+        except (RuntimeError, WebSocketDisconnect):
+            # close races send_json, or this socket is already closed
+            pass
+
+
+def note_deadline(key: str, last_access: int) -> None:
+    """Store the file key and last use, and wake the sweeper. No raw token."""
+    _deadlines[key] = last_access
+    _wake.set()
+
+
+def _positive_wait() -> float | None:
+    """Soonest future wake, or None when there is nothing to wait for.
+
+    Never returns 0. A past deadline is skipped so a deleted row cannot
+    busy-loop the process. A key whose last sweep was store_error waits
+    at most 60 seconds, including when its remaining time is already past.
+    """
+    if not _deadlines and not _live:
+        return None
+    now = time.time()
+    delays: list[float] = []
+    for key, last_access in _deadlines.items():
+        remaining = last_access + SESSION_IDLE_SECONDS - now
+        if key in _sweep_retry:
+            if remaining <= 0:
+                delays.append(60.0)
+            else:
+                delays.append(min(remaining, 60.0))
+        elif remaining > 0:
+            delays.append(remaining)
+    if not delays:
+        return None
+    soonest = min(delays)
+    if soonest <= 0:
+        return None
+    return soonest
+
+
+async def sweep_once(now: int | None = None) -> None:
+    """Classify each stored deadline. Does not touch or hash the key again."""
+    if now is None:
+        now = int(time.time())
+    snapshot = list(_deadlines)
+    for key in snapshot:
+        result = await asyncio.to_thread(classify_key, key, now)
+        if result.state == "ok":
+            _sweep_retry.discard(key)
+            if result.last_access is not None:
+                _deadlines[key] = result.last_access
+        elif result.state == "dead":
+            _deadlines.pop(key, None)
+            _sweep_retry.discard(key)
+            await drop_sockets(key)
+        elif result.state == "store_error":
+            _sweep_retry.add(key)
+
+
+async def sweeper() -> None:
+    while True:
+        if not _deadlines and not _live:
+            await _wake.wait()
+            _wake.clear()
+            continue
+        await sweep_once(int(time.time()))
+        timeout = _positive_wait()
+        if timeout is None:
+            await _wake.wait()
+        else:
+            try:
+                await asyncio.wait_for(_wake.wait(), timeout)
+            except asyncio.TimeoutError:
+                pass
+        _wake.clear()
+
+
 def _client_key(request: Request) -> str:
     if request.client is None:
         return "unknown"
@@ -133,10 +276,12 @@ async def lock_middleware(request: Request, call_next):
             {"detail": "Could not store the session."}, status_code=500
         )
     if result.state != "ok":
+        await drop_sockets(token_key(token))
         response = JSONResponse({"detail": "Unauthorized."}, status_code=401)
         if token:
             _clear_session_cookie(response)
         return response
+    note_deadline(token_key(token), result.last_access)
     response = await call_next(request)
     _set_session_cookie(response, token)
     return response
@@ -253,6 +398,8 @@ async def api_login(request: Request) -> JSONResponse:
         return JSONResponse({"detail": "Wrong password."}, status_code=401)
     response = JSONResponse({"ok": True})
     _set_session_cookie(response, result.token)
+    for key in result.evicted_keys:
+        await drop_sockets(key)
     return response
 
 
@@ -266,6 +413,7 @@ async def api_logout(request: Request) -> JSONResponse:
         )
     response = JSONResponse({"ok": True})
     _clear_session_cookie(response)
+    await drop_sockets(token_key(token))
     return response
 
 
@@ -280,6 +428,7 @@ async def api_session(request: Request) -> JSONResponse:
     if result.state != "ok":
         response = JSONResponse({"detail": "Unauthorized."}, status_code=401)
         _clear_session_cookie(response)
+        await drop_sockets(token_key(token))
         return response
     response = JSONResponse({"ok": True})
     _set_session_cookie(response, token)
@@ -520,11 +669,21 @@ async def _notify_cancelled(task: asyncio.Task, send) -> None:
 @app.websocket("/ws")
 async def ws_ask(websocket: WebSocket) -> None:
     global _active_answers
+    token = websocket.cookies.get(COOKIE_NAME, "")
+    result = await asyncio.to_thread(touch, token)
+    if result.state == "store_error":
+        await websocket.send_denial_response(Response(status_code=500))
+        return
+    if result.state != "ok":
+        await websocket.send_denial_response(Response(status_code=401))
+        return
     await websocket.accept()
     send_lock = asyncio.Lock()
-    cancel = threading.Event()
+    cancel = threading.Event()  # one event for this connection; do not rebind
     pump_task: asyncio.Task | None = None
     background: set[asyncio.Task] = set()
+    register(token_key(token), websocket, cancel)
+    note_deadline(token_key(token), result.last_access)
 
     async def send(payload: dict) -> None:
         async with send_lock:
@@ -533,6 +692,14 @@ async def ws_ask(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_json()
+            result = await asyncio.to_thread(touch, token)
+            if result.state == "store_error":
+                continue
+            if result.state != "ok":
+                cancel.set()  # do not clear()
+                await drop_sockets(token_key(token))
+                return
+            note_deadline(token_key(token), result.last_access)
             if not isinstance(raw, dict):
                 await send(
                     {
@@ -542,7 +709,7 @@ async def ws_ask(websocket: WebSocket) -> None:
                 )
                 continue
             if raw.get("cancel"):
-                cancel.set()
+                cancel.set()  # do not clear(); the in-flight worker must see it
                 if pump_task is not None and not pump_task.done():
                     notice = asyncio.create_task(_notify_cancelled(pump_task, send))
                     background.add(notice)
@@ -570,14 +737,14 @@ async def ws_ask(websocket: WebSocket) -> None:
                     }
                 )
                 continue
-            cancel = threading.Event()
+            if not still_registered(websocket):
+                return  # drop_sockets already set(); do not clear()
             history = raw.get("history")
-            turn_cancel = cancel
 
             async def run(
                 question: str = question,
                 history: object = history,
-                turn_cancel: threading.Event = turn_cancel,
+                turn_cancel: threading.Event = cancel,
             ) -> None:
                 global _active_answers
                 _active_answers += 1
@@ -589,11 +756,15 @@ async def ws_ask(websocket: WebSocket) -> None:
                     if _active_answers == 0:
                         _idle().set()
 
+            cancel.clear()
             pump_task = asyncio.create_task(run())
+            # back to receive_json; do not await _pump on this loop
     except WebSocketDisconnect:
         cancel.set()
         if pump_task is not None and not pump_task.done():
             pump_task.cancel()
+    finally:
+        unregister(websocket)
 
 
 def main() -> None:
