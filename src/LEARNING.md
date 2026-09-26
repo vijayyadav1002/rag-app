@@ -471,7 +471,7 @@ LLM_API_KEY=...
 
 If `LLM_PROVIDER` is unset but `ANTHROPIC_API_KEY` is set, we keep the old Anthropic default so existing commands still work.
 
-**`.env`:** copy `.env.example` → `.env`, uncomment **one** provider block. `llm.py`, `chunk.py`, and `server.py` each call `load_dotenv` on `.env` next to the scripts (`Path(__file__).parent`), not the shell cwd. Variables already in your shell win (`override=False`). `.env` is gitignored. `python llm.py` prints provider/driver/model (not the key). `HOST` and `PORT` are optional; unset, `server.py` listens on `127.0.0.1` port `8000`.
+**`.env`:** copy `.env.example` → `.env`, uncomment **one** provider block. `llm.py`, `chunk.py`, `server.py`, and `auth.py` each call `load_dotenv` on `.env` next to the scripts (`Path(__file__).parent`), not the shell cwd. Variables already in your shell win (`override=False`). `.env` is gitignored. `python llm.py` prints provider/driver/model (not the key). `HOST` and `PORT` are optional; unset, `server.py` listens on `127.0.0.1` port `8000`. `auth.py` loads the same file. `LOCK_PASSWORD` is required for the website only.
 
 **What is local vs remote.** Nomic, FAISS, and the reranker always run on your laptop. `LLM_PROVIDER=ollama` only replaces the *writer*. Eval never calls `llm.py`.
 
@@ -574,13 +574,13 @@ That is not “RAG is solved.” It is “a small, topically distinct handbook i
 **`server.py`**
 
 - FastAPI app. `GET /` returns the HTML file. `WS /ws` is the socket.
-- Lifespan: refuse to start if `index/chunks.faiss` is missing; preload `_load()` on a worker thread so model init does not block the event loop as badly.
+- Lifespan: call `require_lock_password()` and exit when `LOCK_PASSWORD` is missing or empty, before the index check; then refuse to start if `index/chunks.faiss` is missing; preload `_load()` on a worker thread so model init does not block the event loop as badly. `main()` calls `require_lock_password()` before Uvicorn binds.
 - One question at a time per connection. A second question while answering gets `already answering`. The receive loop keeps reading, so a cancel frame can stop the in-flight turn.
 - Empty string → error, no retrieve.
 - `_pump` runs `answer_stream` on a **daemon thread** because retrieve (PyTorch) is blocking. Events go onto an `asyncio.Queue`; the async coroutine `send_json`s them. If this ran on the event loop, one user’s embedding forward pass would freeze every other socket.
 - Disconnect → `cancel.set()`.
 
-`server.py` reads `HOST` and `PORT` from the environment when `main()` starts. Unset, Uvicorn listens on `127.0.0.1:8000`, so only this computer can open the page. `HOST=0.0.0.0` accepts connections from other machines on the same network; those machines open `http://<this-mac-lan-ip>:PORT`. A `PORT` that is not an integer from 1 through 65535 exits before Uvicorn starts. This is a learning server, not a deployment. There is no login, so `HOST=0.0.0.0` exposes Ask and Library, including Approve and Re-index.
+`server.py` reads `HOST` and `PORT` from the environment when `main()` starts. Unset, Uvicorn listens on `127.0.0.1:8000`, so only this computer can open the page. `HOST=0.0.0.0` accepts connections from other machines on the same network; those machines open `http://<this-mac-lan-ip>:PORT`. A `PORT` that is not an integer from 1 through 65535 exits before Uvicorn starts. This is a learning server, not a deployment. The website lock is one shared password, so another machine on `HOST=0.0.0.0` still needs it. The cookie’s idle window is 10 days (`864000` seconds) and slides on use. Rows live in `src/sessions.json`. Logout deletes that one cookie, and open sockets for that token close immediately with `1008`. The idle window does the same when it runs out. A new login does not revoke older tokens. Changing the password and restarting invalidates existing rows because the stamp no longer matches. The restart kills their sockets because the old process exits. The new process only purges rows. It does not send `1008`. The cookie is not `Secure` because the server is HTTP.
 
 **`static/index.html`**
 
@@ -590,7 +590,8 @@ One page: a thread of turns, a composer stuck to the bottom, connection state be
 - A follow-up first shows “Reading the conversation…”. `generate.py` rewrites that follow-up into one standalone search question, then retrieves with that string. The answer prompt still contains the recent turns (8 messages, 1,500 characters each, 6,000 total). The page keeps showing the whole thread. Citation numbers apply only to this turn’s excerpts. If the rewrite fails, search uses the previous user question plus the new one, capped at 400 characters.
 - On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). The meta line is `[n] file · section` or `[n] file · excerpt`. A note says “Ordered by the reranker.” or “Reranker scores were below 0, so these stay in vector-search order.” A rewritten search is labeled `Follow-up searched as: …`.
 - On `token`, appends to that turn’s Markdown buffer and re-renders it as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible. Answer headings use `text-transform: none` so they do not inherit the panel label style.
-- The thread lives in `sessionStorage` (`ask-northwind-chat`) so a reload keeps the session. **New chat** deletes it. The server stores nothing, and there is no list of old conversations.
+- The thread lives in `sessionStorage` (`ask-northwind-chat`) so a reload keeps the session. **New chat** deletes it. The server stores nothing, and there is no list of old conversations. Logout does not clear `ask-northwind-chat`.
+- The lock hides the composer until `GET /api/session` is 200. A 401, or a socket close because the session died, shows the lock instead of a crash. `visibilitychange` does not call `/api/status` while the body is locked.
 - `GET /api/status` sets `stale` when any library row is not `indexed`. Ask then shows: “The library has changed since the last Re-index. Answers still use the previous index.” The link goes to `/library`.
 - `{ "cancel": true }` stops an answer still in flight. Reconnect is manual. The offline line is “Not connected. Use Reconnect.” No retry loop.
 
@@ -598,9 +599,9 @@ One page: a thread of turns, a composer stuck to the bottom, connection state be
 
 Library is a second page, not a panel on Ask. Upload and delete stage a JSON proposal immediately under `review/` (gitignored, so the chunker never indexes it). Edit opens the live file in the editor and does not write anything until **Save draft**, **Format**, or **Approve**. Format saves the textarea first, then calls the model. One path has one open proposal; a later submit replaces it. Nothing reaches `DOCS_DIR` until Approve.
 
-Upload runs `format_markdown` (`FORMAT_MAX_TOKENS = 4096`) through the same `complete()` Ask uses. The formatter must return one `#` title and `##` sections, with no `###`. A bad result, a truncation, or a missing model stores the raw text as a hand edit (`origin` `manual`) and keeps the error on the proposal. **Save draft** writes the textarea and does not call the model. The Format button saves that textarea first, then calls `POST /api/review/{path}/format`. A bad result returns 422 and does not replace the saved body. Upload is the path that keeps the raw file and the error message when formatting fails before a proposal exists. **Approve** writes or deletes the live file, then drops the proposal. If the live mtime no longer matches `base_mtime_ns`, Approve returns 409 and writes nothing. **Reject** drops the proposal. There is no login. The Approve button is the human gate.
+Upload runs `format_markdown` (`FORMAT_MAX_TOKENS = 4096`) through the same `complete()` Ask uses. The formatter must return one `#` title and `##` sections, with no `###`. A bad result, a truncation, or a missing model stores the raw text as a hand edit (`origin` `manual`) and keeps the error on the proposal. **Save draft** writes the textarea and does not call the model. The Format button saves that textarea first, then calls `POST /api/review/{path}/format`. A bad result returns 422 and does not replace the saved body. Upload is the path that keeps the raw file and the error message when formatting fails before a proposal exists. **Approve** writes or deletes the live file, then drops the proposal. If the live mtime no longer matches `base_mtime_ns`, Approve returns 409 and writes nothing. **Reject** drops the proposal. The lock is in front of the website. Approve remains the human gate.
 
-`list_docs` states are `indexed`, `changed` (indexed, mtime after `indexed_at`), `not_indexed`, and `missing_on_disk`. The list stays available during a rebuild. Ask, upload, delete, and review mutations return 409 while Re-index holds the lock. The service worker cache name is `ask-northwind-v9`. It precaches `/`, `/library`, and `/app.css`, and never caches `/ws` or `/api/*`. Offline Library copy is “You're offline.”
+`list_docs` states are `indexed`, `changed` (indexed, mtime after `indexed_at`), `not_indexed`, and `missing_on_disk`. The list stays available during a rebuild. Ask, upload, delete, and review mutations return 409 while Re-index holds the lock. The service worker cache name is `ask-northwind-v10`. It precaches `/`, `/library`, and `/app.css`, and never caches `/ws` or `/api/*`. Offline Library copy is “You're offline.”
 
 **Python is a fine language for this.** The embedding and FAISS ecosystem is Python-first. FastAPI’s WebSocket support is enough. The RAG core would look the same behind any other transport (SSE, gRPC, a job queue).
 
@@ -616,8 +617,10 @@ Upload runs `format_markdown` (`FORMAT_MAX_TOKENS = 4096`) through the same `com
 | `format_md.py` | LLM rewrite into one `#` title and `##` sections; rejects a bad result |
 | `library.py` | Safe names, list/read/atomic write/delete under `DOCS_DIR`; `changed` when mtime is after `indexed_at` |
 | `static/library.html` | Review queue, editor, file list, upload, delete, Re-index |
-| `static/sw.js` | Shell cache `ask-northwind-v9` |
-| `.env.example` | Commented sample: one provider, optional `DOCS_DIR`, optional `HOST` / `PORT`. Copy to `.env` |
+| `auth.py` | Website password, session file, and throttle |
+| `sessions.json` | Session rows; gitignored |
+| `static/sw.js` | Shell cache `ask-northwind-v10` |
+| `.env.example` | Commented sample: one provider, optional `DOCS_DIR`, optional `HOST` / `PORT`, commented `LOCK_PASSWORD`. Copy to `.env` |
 | `index/` | Built artifacts; gitignored |
 | `.venv/` | Python 3.12 environment; gitignored. 3.12 not 3.14 because FAISS / sentence-transformers wheels lag on brand-new CPython |
 | `README.md` | Operator’s manual + the eval story + production talking points we did not implement |
@@ -769,7 +772,7 @@ Ungated rerank prefers IT security over equipment return for the laptop query; t
 
 ## Part 9 — What we deliberately did not build
 
-The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build. The review queue, section text in the prompt, the rerank confidence gate, the stale-index note, and one-question follow-up rewrite are already in the repo. The table is what is still out.
+The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build. The review queue, section text in the prompt, the rerank confidence gate, the stale-index note, one-question follow-up rewrite, and the website master lock are already in the repo. The table is what is still out.
 
 | Not built | Why it exists in real systems | Why it’s omitted here |
 |-----------|-------------------------------|------------------------|
@@ -778,7 +781,7 @@ The README’s “production version” list is not a backlog we forgot. It is t
 | Metadata filters | Don’t retrieve an obsolete policy version | One version of each doc |
 | LangChain / LiteLLM | Faster to scaffold / one model string for 100 vendors | Hides stages; we kept two HTTP shapes visible |
 | Answer grading / RAGAS | Know if the *sentence* is right | Would call an LLM from eval and mix failure modes |
-| Auth, deploy, multi-user | Product concerns | One local process |
+| Per-user accounts, multi-user identity, deploy | Product concerns | The website master lock is in. One local process stays true (the socket registry is in-process) |
 
 If you implement those later, keep `chunk.py` / `retrieve.py` / `generate.py` / `llm.py` as the brain. New ideas should be new stages you can turn off in `eval.py`.
 

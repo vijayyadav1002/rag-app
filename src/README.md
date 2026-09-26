@@ -71,8 +71,9 @@ LM Studio, vLLM, Groq, OpenRouter, xAI, OpenAI itself).
 | `xai` | Chat Completions | `grok-4.5` | `XAI_API_KEY` or `LLM_API_KEY` | `https://api.x.ai/v1` |
 
 Copy `.env.example` to `.env` and uncomment one provider block. `.env` is
-gitignored. `llm.py`, `chunk.py`, and `server.py` load it (exported shell
-variables still win).
+gitignored. `llm.py`, `chunk.py`, `server.py`, and `auth.py` load it
+(exported shell variables still win). `server.py` requires `LOCK_PASSWORD`.
+CLI scripts do not read `LOCK_PASSWORD`.
 
 Optional `DOCS_DIR` points the corpus (chunking, Library upload/delete, Re-index)
 at another markdown folder. Relative paths are from `src/`. Unset keeps
@@ -240,13 +241,14 @@ being able to discuss:
 | `library.py` | Safe names, list/read/atomic write/delete under `DOCS_DIR` (no rebuild) |
 | `review.py` | Proposal JSON in `review/` until Approve |
 | `format_md.py` | LLM rewrite into `#` / `##` Markdown for the chunker |
-| `server.py` | FastAPI WebSocket shell + library REST + review queue + Re-index lock + `GET /library`; bind address is `HOST` and `PORT` from `.env` |
-| `.env.example` | Commented sample. Copy to `.env`: one LLM provider, optional `DOCS_DIR`, optional `HOST` and `PORT` |
+| `auth.py` | Website password, session file, and throttle |
+| `server.py` | FastAPI WebSocket shell + library REST + review queue + Re-index lock + website lock + `GET /library`; bind address is `HOST` and `PORT` from `.env` |
+| `.env.example` | Commented sample. Copy to `.env`: one LLM provider, optional `DOCS_DIR`, optional `HOST` and `PORT`, commented `LOCK_PASSWORD` |
 | `static/index.html` | Ask UI + top nav + PWA registration |
 | `static/library.html` | Library UI: review queue, editor, list, upload, delete, Re-index |
 | `static/app.css` | Shared theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
-| `static/sw.js` | Cache the UI shell only (not `/ws` or `/api/*`) |
+| `static/sw.js` | Cache the UI shell only (`ask-northwind-v10`; not `/ws` or `/api/*`) |
 
 ## Web UI
 
@@ -265,12 +267,12 @@ HOST=0.0.0.0
 PORT=8000
 ```
 
-`PORT` must be an integer from 1 through 65535. On the other machine, open `http://<this-mac-lan-ip>:8000` (use the port you set). On this Mac, `ipconfig getifaddr en0` prints the Wi-Fi address (`en1` on some Macs). There is no login, so anyone who can reach that address can use Ask and can upload, approve, delete, and re-index. The first inbound connection may need Python allowed under System Settings → Network → Firewall.
+`PORT` must be an integer from 1 through 65535. On the other machine, open `http://<this-mac-lan-ip>:8000` (use the port you set). On this Mac, `ipconfig getifaddr en0` prints the Wi-Fi address (`en1` on some Macs). The page shell is still reachable, but Ask, the socket, and Library actions need the master password. One password, no accounts. The cookie lasts 10 days from last use (the idle window slides) and dies on logout. An open socket for that token closes then, and also when the idle window runs out. A new login does not revoke older tokens. Other machines on `HOST=0.0.0.0` use that password. `build_index.py`, `cli.py`, `eval.py`, `chunk.py`, and `retrieve.py` stay unlocked. The first inbound connection may need Python allowed under System Settings → Network → Firewall.
 
 Each turn labels a source `section` or `excerpt`, and says which order shipped. When the library is ahead of the index, a note links to Library. The page keeps the whole thread. The model sees at most four earlier exchanges (8 messages, 6,000 characters, 1,500 per message). If the rewrite fails, search uses the previous question plus the new one.
 
 ## Library and re-index
 
-Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. There is no login — anyone who can open the app can approve. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
+Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Upload is markdown only (basename, 1 MB, up to 20 files). An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. The lock is in front of the page. Approve is still the human gate that writes the corpus. Unlocking does not write files. Approving does not replace the password. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
-Auth, PDF/Word, a stored list of past chats, auto-reindex on upload, and offline Q&A are out of scope. The Ask thread is one tab session only.
+Per-user accounts and OAuth stay out, along with PDF/Word, a stored list of past chats, auto-reindex on upload, and offline Q&A. The Ask thread is one tab session only.
