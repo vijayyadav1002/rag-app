@@ -8,3 +8,4 @@ src/review/
 src/sessions.json
 src/sessions.json.tmp
 .superpowers/
+.cursor
