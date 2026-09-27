@@ -11,6 +11,7 @@ the pages can say the index is behind without rebuilding it.
 from __future__ import annotations
 
 import json
+import pickle
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,8 @@ DOCS_DIR = resolve_docs_dir()
 INDEX_DIR = Path(__file__).parent / "index"
 MAX_UPLOAD_BYTES = 1_000_000
 MAX_UPLOAD_FILES = 20
+# (resolved pickle path, mtime_ns, counts). A failed read is not cached.
+_chunk_count_cache: tuple[str, int, dict[str, int]] | None = None
 
 
 class UnsafeNameError(ValueError):
@@ -85,9 +88,51 @@ def _parse_time(value: str | None) -> datetime | None:
     return parsed
 
 
+def chunk_counts(index_dir: Path | None = None) -> dict[str, int] | None:
+    """How many indexed windows each source file has.
+
+    The library page shows that count beside the file. Reading the pickle on
+    every refresh would redo the same work for a large vault, so the result
+    is kept until `metadata.pkl` changes. Missing or unreadable metadata
+    returns None — the row then omits the count instead of showing a zero
+    that might mean "not chunked."
+    """
+    global _chunk_count_cache
+    index_dir = index_dir or INDEX_DIR
+    path = index_dir / "metadata.pkl"
+    if not path.is_file():
+        return None
+    try:
+        stamp = path.stat().st_mtime_ns
+        key = str(path.resolve())
+    except OSError:
+        return None
+    if (
+        _chunk_count_cache
+        and _chunk_count_cache[0] == key
+        and _chunk_count_cache[1] == stamp
+    ):
+        return _chunk_count_cache[2]
+    try:
+        with open(path, "rb") as handle:
+            chunks = pickle.load(handle)
+    except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ImportError, ModuleNotFoundError):
+        return None
+    if not isinstance(chunks, list):
+        return None
+    counts: dict[str, int] = {}
+    for chunk in chunks:
+        name = getattr(chunk, "source_file", None)
+        if isinstance(name, str) and name:
+            counts[name] = counts.get(name, 0) + 1
+    _chunk_count_cache = (key, stamp, counts)
+    return counts
+
+
 def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> list[dict]:
     docs_dir = docs_dir or DOCS_DIR
     meta = index_meta(index_dir)
+    counts = chunk_counts(index_dir)
     indexed = set(meta["files"])
     indexed_at = _parse_time(meta.get("indexed_at"))
     disk = {}
@@ -111,7 +156,7 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
                 and mtime > indexed_at
             ):
                 state = "changed"
-            rows.append({**disk[name], "state": state})
+            rows.append({**disk[name], "state": state, "chunk_count": _chunk_count(counts, name)})
         else:
             rows.append(
                 {
@@ -119,9 +164,16 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
                     "size": 0,
                     "mtime": None,
                     "state": "missing_on_disk",
+                    "chunk_count": _chunk_count(counts, name),
                 }
             )
     return rows
+
+
+def _chunk_count(counts: dict[str, int] | None, name: str) -> int | None:
+    if counts is None:
+        return None
+    return counts.get(name, 0)
 
 
 def save_upload(filename: str, data: bytes, docs_dir: Path | None = None) -> str:

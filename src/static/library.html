@@ -4,30 +4,70 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Library · Ask Northwind</title>
-  <meta name="theme-color" content="#c9a36a" />
+  <meta name="theme-color" content="#0c0e12" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Ask Northwind" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,400;6..72,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/app.css" />
+  <script>
+    (function () {
+      var theme = "dark";
+      try {
+        var saved = localStorage.getItem("northwind-theme");
+        if (saved === "light" || saved === "dark") theme = saved;
+      } catch (err) {}
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
 </head>
-<body class="locked">
-  <main>
-    <header class="site-header">
-      <h1><a href="/">Ask Northwind</a></h1>
-      <nav>
-        <a href="/">Ask</a>
-        <a href="/library" class="active">Library</a>
-      </nav>
+<body class="locked library-page">
+  <header class="site-header">
+    <a class="brand" href="/">
+      <span class="mark" aria-hidden="true">N</span>
+      <span>
+        <strong>Ask Northwind</strong>
+        <small>Northwind Retail Co. Internal Knowledge Base</small>
+      </span>
+    </a>
+    <nav>
+      <a href="/">Ask</a>
+      <a href="/library" class="active">Library</a>
+    </nav>
+    <div class="header-tools">
+      <button type="button" class="ghost" id="theme-toggle" title="Toggle theme">
+        <span id="theme-toggle-label">Light</span>
+      </button>
       <button type="button" class="ghost" id="logout">Log out</button>
-    </header>
+    </div>
+  </header>
+
+  <main class="workspace library-wrap">
+    <section class="archive-head">
+      <p class="archive-kicker">Internal knowledge archive</p>
+      <h1>Document index</h1>
+      <p class="deck">Markdown in the mounted corpus. Search changes only after Approve, then Re-index.</p>
+      <div class="archive-tools">
+        <span class="stat"><strong id="file-count">0</strong> files</span>
+        <span class="stat"><strong id="chunk-count">—</strong> chunks</span>
+        <span class="stat" id="ready-flag">—</span>
+        <button type="button" id="upload">Upload .md</button>
+        <button type="button" id="reindex">Re-index</button>
+      </div>
+      <p id="lib-status">Loading documents…</p>
+      <input id="doc-file" type="file" accept=".md,text/markdown" multiple />
+    </section>
 
     <section class="panel" id="review-panel">
       <h2>Review</h2>
       <p id="review-status"></p>
       <div id="review-list"></div>
       <div id="editor" hidden>
-        <textarea id="draft" spellcheck="false"></textarea>
+        <textarea id="draft" spellcheck="false" aria-label="Draft markdown"></textarea>
         <div class="lib-actions">
           <button type="button" id="format-draft">Format</button>
           <button type="button" id="save-draft">Save draft</button>
@@ -39,31 +79,75 @@
     </section>
 
     <section class="panel" id="library">
-      <h2>Library</h2>
-      <p id="lib-status">Loading documents…</p>
+      <search class="lib-toolbar">
+        <input id="doc-filter" type="search" placeholder="Filter documents by path" aria-label="Filter documents by path" />
+        <div class="pills" id="folder-pills"></div>
+      </search>
       <div id="doc-list"></div>
-      <div class="lib-actions">
-        <button type="button" id="upload">Upload .md</button>
-        <input id="doc-file" type="file" accept=".md,text/markdown" multiple />
-        <button type="button" id="reindex">Re-index</button>
+      <div class="pager" id="doc-pager" hidden></div>
+    </section>
+
+    <section class="panel" id="ingest">
+      <h2>Add markdown</h2>
+      <div class="drop-zone" id="drop-zone">
+        <p>Drop Markdown files here, or <button type="button" id="browse-files">browse</button></p>
+        <p class="fine">MARKDOWN ONLY · 1 MB EACH · UP TO 20 FILES</p>
       </div>
     </section>
-    <section id="lock" class="panel">
-      <h2>Locked</h2>
-      <p>Enter the master password to use Ask and Library.</p>
+  </main>
+
+  <section id="lock">
+    <div class="lock-card">
+      <div class="lock-brand">
+        <div class="mark" aria-hidden="true">N</div>
+        <h1>Ask Northwind <span class="vault-tag">Internal vault</span></h1>
+        <p>Restricted access — Northwind Retail Co. internal systems</p>
+      </div>
       <form id="lock-form" method="post" action="/api/session">
-        <input id="lock-password" type="password" autocomplete="current-password"
-               aria-label="Password" />
-        <button type="submit" id="unlock">Unlock</button>
+        <div class="lock-label">
+          <label for="lock-password">Master passphrase</label>
+          <span class="req">Required</span>
+        </div>
+        <div class="lock-field">
+          <input id="lock-password" type="password" autocomplete="current-password" aria-label="Password" />
+          <button type="button" id="lock-reveal" aria-label="Show password">Show</button>
+        </div>
+        <p class="lock-hint">Single master key unlocks the session.</p>
+        <button type="submit" id="unlock">Authenticate session</button>
       </form>
       <button type="button" class="ghost" id="lock-reconnect" hidden>Reconnect</button>
       <p id="lock-status"></p>
-    </section>
-  </main>
+    </div>
+  </section>
+
+  <dialog id="preview" closedby="any" aria-labelledby="preview-title">
+    <div class="sheet">
+      <header>
+        <div>
+          <h2 id="preview-title">Document</h2>
+          <p id="preview-meta"></p>
+        </div>
+        <button type="button" class="ghost" id="preview-close">Close</button>
+      </header>
+      <div id="preview-body" class="preview-body"></div>
+      <footer>
+        <button type="button" id="preview-edit">Edit in Library</button>
+      </footer>
+    </div>
+  </dialog>
+
   <script>
     const libStatus = document.getElementById("lib-status");
     const docList = document.getElementById("doc-list");
+    const docFilter = document.getElementById("doc-filter");
+    const folderPills = document.getElementById("folder-pills");
+    const docPager = document.getElementById("doc-pager");
+    const fileCountEl = document.getElementById("file-count");
+    const chunkCountEl = document.getElementById("chunk-count");
+    const readyFlag = document.getElementById("ready-flag");
     const uploadBtn = document.getElementById("upload");
+    const browseBtn = document.getElementById("browse-files");
+    const dropZone = document.getElementById("drop-zone");
     const fileInput = document.getElementById("doc-file");
     const reindexBtn = document.getElementById("reindex");
     const reviewStatus = document.getElementById("review-status");
@@ -78,9 +162,19 @@
     const logoutBtn = document.getElementById("logout");
     const lockForm = document.getElementById("lock-form");
     const lockPassword = document.getElementById("lock-password");
+    const lockReveal = document.getElementById("lock-reveal");
     const unlockBtn = document.getElementById("unlock");
     const lockReconnect = document.getElementById("lock-reconnect");
     const lockStatus = document.getElementById("lock-status");
+    const themeToggle = document.getElementById("theme-toggle");
+    const themeLabel = document.getElementById("theme-toggle-label");
+    const previewDialog = document.getElementById("preview");
+    const previewTitle = document.getElementById("preview-title");
+    const previewMeta = document.getElementById("preview-meta");
+    const previewBody = document.getElementById("preview-body");
+    const previewClose = document.getElementById("preview-close");
+    const previewEdit = document.getElementById("preview-edit");
+
     const STATE_LABEL = {
       indexed: "indexed",
       changed: "changed",
@@ -90,12 +184,17 @@
     const SESSION_ENDED = "Session ended. Enter the password.";
     const STORE_MSG = "Could not store the session.";
     const OFFLINE_MSG = "You're offline.";
+    const PAGE_SIZE = 25;
 
     let rebuilding = false;
     let proposals = [];
     let openTarget = null;
-    // Bumped on reveal and showLock so an older sessionOk cannot apply.
     let sessionGen = 0;
+    let lastDocs = [];
+    let lastChunkTotal = null;
+    let folder = "all";
+    let page = 1;
+    let docQuery = new URLSearchParams(location.search).get("doc");
 
     function encPath(name) {
       return name.split("/").map(encodeURIComponent).join("/");
@@ -111,21 +210,347 @@
       return !navigator.onLine;
     }
 
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (ch) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])
+      );
+    }
+
+    function renderInline(text) {
+      const bits = [];
+      const re = /`([^`]+)`/g;
+      let last = 0;
+      let match;
+      while ((match = re.exec(text))) {
+        bits.push({ t: "text", v: text.slice(last, match.index) });
+        bits.push({ t: "code", v: match[1] });
+        last = match.index + match[0].length;
+      }
+      bits.push({ t: "text", v: text.slice(last) });
+      return bits.map((bit) => {
+        if (bit.t === "code") return `<code>${escapeHtml(bit.v)}</code>`;
+        let s = escapeHtml(bit.v);
+        s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+        s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+        return s;
+      }).join("");
+    }
+
+    function renderMarkdown(src) {
+      const fences = [];
+      let text = String(src || "").replace(/\r\n/g, "\n");
+      text = text.replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => {
+        const n = fences.length;
+        fences.push(`<pre tabindex="0"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
+        return "\n\n%%FENCE" + n + "%%\n\n";
+      });
+      const lines = text.split("\n");
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        if (/^\s*$/.test(line)) { i += 1; continue; }
+        const fence = line.trim().match(/^%%FENCE(\d+)%%$/);
+        if (fence) { out.push(fences[Number(fence[1])]); i += 1; continue; }
+        const heading = line.match(/^(#{1,3})\s+(.+)$/);
+        if (heading) {
+          const n = heading[1].length;
+          out.push(`<h${n}>${renderInline(heading[2].trim())}</h${n}>`);
+          i += 1;
+          continue;
+        }
+        if (/^\s*[-*+]\s+/.test(line)) {
+          const items = [];
+          while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+            items.push(`<li>${renderInline(lines[i].replace(/^\s*[-*+]\s+/, ""))}</li>`);
+            i += 1;
+          }
+          out.push(`<ul>${items.join("")}</ul>`);
+          continue;
+        }
+        const para = [];
+        while (i < lines.length && lines[i].trim() && !/^(#{1,3})\s+/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^%%FENCE\d+%%$/.test(lines[i].trim())) {
+          para.push(lines[i]);
+          i += 1;
+        }
+        out.push(`<p>${renderInline(para.join("\n")).replace(/\n/g, "<br>")}</p>`);
+      }
+      return out.join("");
+    }
+
+    function topFolder(name) {
+      const slash = String(name).indexOf("/");
+      if (slash <= 0) return "";
+      const folderName = name.slice(0, slash);
+      if (!folderName || folderName.startsWith(".")) return "";
+      return folderName;
+    }
+
+    function formatSize(bytes) {
+      if (!bytes) return "";
+      if (bytes < 1024) return bytes + " B";
+      return (bytes / 1024).toFixed(bytes < 10240 ? 1 : 0) + " KB";
+    }
+
+    function relTime(iso) {
+      if (!iso) return "";
+      const then = Date.parse(iso);
+      if (Number.isNaN(then)) return "";
+      const seconds = Math.round((Date.now() - then) / 1000);
+      if (seconds < 60) return "just now";
+      if (seconds < 3600) return Math.round(seconds / 60) + "m ago";
+      if (seconds < 86400) return Math.round(seconds / 3600) + "h ago";
+      const days = Math.round(seconds / 86400);
+      if (days < 14) return days + "d ago";
+      return new Date(then).toLocaleDateString();
+    }
+
+    function syncThemeLabel() {
+      const theme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+      themeLabel.textContent = theme === "dark" ? "Light" : "Dark";
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = theme === "dark" ? "#0c0e12" : "#f6f5f2";
+    }
+
+    function setTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+      try { localStorage.setItem("northwind-theme", theme); } catch (err) {}
+      syncThemeLabel();
+    }
+
+    function bindLightDismiss(dialog) {
+      if ("closedBy" in HTMLDialogElement.prototype) return;
+      dialog.addEventListener("click", (event) => {
+        if (event.target !== dialog) return;
+        const rect = dialog.getBoundingClientRect();
+        const inside = rect.top <= event.clientY && event.clientY <= rect.top + rect.height
+          && rect.left <= event.clientX && event.clientX <= rect.left + rect.width;
+        if (!inside) dialog.close();
+      });
+    }
+
     function setLibStatus(text, kind) {
       libStatus.textContent = text;
       libStatus.className = kind || "";
     }
 
+    function renderStats(stale) {
+      fileCountEl.textContent = String(lastDocs.length);
+      chunkCountEl.textContent = typeof lastChunkTotal === "number" ? String(lastChunkTotal) : "—";
+      const ahead = stale || lastDocs.some((doc) => doc.state !== "indexed");
+      readyFlag.textContent = ahead ? "Re-index to update search" : "Ready";
+    }
+
+    function visibleDocs() {
+      const query = (docFilter.value || "").trim().toLowerCase();
+      return lastDocs.filter((doc) => {
+        if (folder !== "all" && topFolder(doc.name) !== folder) return false;
+        if (query && !String(doc.name).toLowerCase().includes(query)) return false;
+        return true;
+      });
+    }
+
+    function renderPills() {
+      const counts = new Map();
+      for (const doc of lastDocs) {
+        const name = topFolder(doc.name);
+        if (!name) continue;
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+      if (folder !== "all" && !counts.has(folder)) folder = "all";
+      folderPills.replaceChildren();
+      const names = ["all", ...[...counts.keys()].sort((a, b) => a.localeCompare(b))];
+      for (const name of names) {
+        const button = document.createElement("button");
+        button.type = "button";
+        const count = name === "all" ? lastDocs.length : counts.get(name);
+        button.textContent = (name === "all" ? "All" : name) + " (" + count + ")";
+        if (name === folder) button.className = "active";
+        button.addEventListener("click", () => {
+          folder = name;
+          page = 1;
+          renderPills();
+          renderDocPage();
+        });
+        folderPills.append(button);
+      }
+    }
+
+    function renderDocPage() {
+      const docs = visibleDocs();
+      const pages = Math.max(1, Math.ceil(docs.length / PAGE_SIZE));
+      if (page > pages) page = pages;
+      if (page < 1) page = 1;
+      const start = (page - 1) * PAGE_SIZE;
+      const slice = docs.slice(start, start + PAGE_SIZE);
+      docList.replaceChildren();
+      if (!lastDocs.length) {
+        const empty = document.createElement("p");
+        empty.className = "doc-meta";
+        empty.textContent = "No markdown files.";
+        docList.append(empty);
+      } else if (!slice.length) {
+        const empty = document.createElement("p");
+        empty.className = "doc-meta";
+        empty.textContent = "No markdown files match.";
+        docList.append(empty);
+      } else {
+        for (const doc of slice) {
+          const row = document.createElement("article");
+          row.className = "doc-row";
+          row.dataset.name = doc.name;
+          const main = document.createElement("div");
+          const title = document.createElement("p");
+          title.className = "doc-name";
+          title.textContent = doc.name;
+          const meta = document.createElement("p");
+          meta.className = "doc-meta";
+          const bits = [];
+          if (typeof doc.chunk_count === "number") {
+            bits.push(doc.chunk_count + (doc.chunk_count === 1 ? " chunk" : " chunks"));
+          }
+          const when = relTime(doc.mtime);
+          if (when) bits.push(when);
+          const size = formatSize(doc.size);
+          if (size) bits.push(size);
+          meta.textContent = bits.join(" · ");
+          main.append(title, meta);
+          const actions = document.createElement("div");
+          actions.className = "doc-actions";
+          const state = document.createElement("span");
+          state.className = "state " + doc.state;
+          state.textContent = STATE_LABEL[doc.state] || doc.state;
+          actions.append(state);
+          if (doc.pending) {
+            const pending = document.createElement("span");
+            pending.className = "state pending";
+            pending.textContent = "pending";
+            actions.append(pending);
+          }
+          const view = document.createElement("button");
+          view.type = "button";
+          view.className = "ghost view-doc";
+          view.textContent = "Preview";
+          view.addEventListener("click", () => openPreview(doc.name));
+          const edit = document.createElement("button");
+          edit.type = "button";
+          edit.className = "ghost mutate";
+          edit.textContent = "Edit";
+          edit.disabled = rebuilding;
+          edit.addEventListener("click", () => editDoc(doc.name));
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "ghost mutate danger";
+          del.textContent = "Delete";
+          del.disabled = rebuilding;
+          del.addEventListener("click", () => removeDoc(doc.name));
+          actions.append(view);
+          if (doc.state !== "missing_on_disk") actions.append(edit, del);
+          row.append(main, actions);
+          docList.append(row);
+        }
+      }
+      const label = document.createElement("span");
+      const from = docs.length ? start + 1 : 0;
+      const to = Math.min(start + PAGE_SIZE, docs.length);
+      label.textContent = docs.length ? "Showing " + from + "–" + to + " of " + docs.length : "";
+      const controls = document.createElement("div");
+      const prev = document.createElement("button");
+      prev.type = "button";
+      prev.className = "ghost";
+      prev.textContent = "Previous";
+      prev.disabled = page <= 1;
+      prev.addEventListener("click", () => { page -= 1; renderDocPage(); });
+      const mark = document.createElement("span");
+      mark.textContent = docs.length ? "Page " + page + " of " + pages : "";
+      const next = document.createElement("button");
+      next.type = "button";
+      next.className = "ghost";
+      next.textContent = "Next";
+      next.disabled = page >= pages;
+      next.addEventListener("click", () => { page += 1; renderDocPage(); });
+      controls.append(prev, mark, next);
+      docPager.replaceChildren(label, controls);
+      docPager.hidden = docs.length <= PAGE_SIZE;
+    }
+
+    function renderDocs(docs, chunkTotal) {
+      if (Array.isArray(docs)) lastDocs = docs;
+      if (typeof chunkTotal === "number") lastChunkTotal = chunkTotal;
+      renderPills();
+      renderDocPage();
+      renderStats(false);
+      if (docQuery) {
+        const name = docQuery;
+        docQuery = null;
+        history.replaceState(null, "", "/library");
+        folder = "all";
+        docFilter.value = "";
+        const idx = visibleDocs().findIndex((doc) => doc.name === name);
+        if (idx >= 0) page = Math.floor(idx / PAGE_SIZE) + 1;
+        renderPills();
+        renderDocPage();
+        const row = docList.querySelector('[data-name="' + CSS.escape(name) + '"]');
+        if (row) {
+          row.classList.add("is-target");
+          row.scrollIntoView({ block: "center" });
+        }
+        const doc = lastDocs.find((item) => item.name === name);
+        if (doc && doc.state !== "missing_on_disk") editDoc(name);
+      }
+    }
+
+    async function openPreview(name) {
+      const doc = lastDocs.find((item) => item.name === name);
+      previewTitle.textContent = name;
+      const bits = [];
+      if (doc && typeof doc.chunk_count === "number") {
+        bits.push(doc.chunk_count + (doc.chunk_count === 1 ? " chunk indexed" : " chunks indexed"));
+      }
+      if (doc && doc.state) bits.push(STATE_LABEL[doc.state] || doc.state);
+      previewMeta.textContent = bits.join(" · ") || "View only";
+      previewBody.textContent = "Loading…";
+      previewEdit.hidden = !doc || doc.state === "missing_on_disk";
+      previewEdit.onclick = () => {
+        previewDialog.close();
+        editDoc(name);
+      };
+      if (!previewDialog.open) previewDialog.showModal();
+      if (isOffline()) {
+        previewBody.textContent = OFFLINE_MSG;
+        return;
+      }
+      try {
+        const res = await fetch("/api/docs/" + encPath(name));
+        if (sessionEnded(res)) { previewDialog.close(); return; }
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 404) {
+          previewBody.textContent = "This file is no longer in the library.";
+          previewEdit.hidden = true;
+          return;
+        }
+        if (!res.ok) {
+          previewBody.textContent = detail(body, "Could not open the file.");
+          return;
+        }
+        previewBody.innerHTML = renderMarkdown(body.body || "");
+      } catch (err) {
+        previewBody.textContent = OFFLINE_MSG;
+      }
+    }
+
     function setRebuildLock(locked) {
       rebuilding = locked;
       uploadBtn.disabled = locked;
+      browseBtn.disabled = locked;
       reindexBtn.disabled = locked;
       formatBtn.disabled = locked;
       saveBtn.disabled = locked;
       approveBtn.disabled = locked;
       reloadBtn.disabled = locked;
-      docList.querySelectorAll("button").forEach((b) => { b.disabled = locked; });
-      reviewList.querySelectorAll("button").forEach((b) => { b.disabled = locked; });
+      docList.querySelectorAll("button.mutate").forEach((button) => { button.disabled = locked; });
+      reviewList.querySelectorAll("button").forEach((button) => { button.disabled = locked; });
       reindexBtn.textContent = locked ? "Rebuilding…" : "Re-index";
     }
 
@@ -147,6 +572,7 @@
       sessionGen += 1;
       document.body.classList.add("locked");
       stopRebuildPoll();
+      if (previewDialog.open) previewDialog.close();
       lockReconnect.hidden = true;
       lockStatus.textContent = message;
       lockStatus.className = message ? "err" : "";
@@ -198,10 +624,7 @@
         }
         return;
       }
-      if (ok === true) {
-        reveal();
-        return;
-      }
+      if (ok === true) { reveal(); return; }
       if (ok === false) {
         lockStatus.textContent = "";
         lockStatus.className = "";
@@ -238,69 +661,21 @@
       }
     }
 
-    function renderDocs(docs) {
-      docList.replaceChildren();
-      if (!docs.length) {
-        const empty = document.createElement("p");
-        empty.className = "preview";
-        empty.textContent = "No markdown files.";
-        docList.appendChild(empty);
-        return;
-      }
-      for (const doc of docs) {
-        const row = document.createElement("div");
-        row.className = "row";
-        const left = document.createElement("div");
-        left.textContent = doc.name;
-        const state = document.createElement("span");
-        state.className = "state " + doc.state;
-        state.textContent = STATE_LABEL[doc.state] || doc.state;
-        const edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "ghost";
-        edit.textContent = "Edit";
-        edit.disabled = rebuilding;
-        edit.addEventListener("click", () => editDoc(doc.name));
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "ghost";
-        del.textContent = "Delete";
-        del.disabled = rebuilding;
-        del.addEventListener("click", () => removeDoc(doc.name));
-        if (doc.pending) {
-          const pending = document.createElement("span");
-          pending.className = "state pending";
-          pending.textContent = "pending";
-          row.append(left, state, pending, edit, del);
-        } else {
-          row.append(left, state, edit, del);
-        }
-        if (doc.state === "missing_on_disk") {
-          del.hidden = true;
-          edit.hidden = true;
-        }
-        docList.appendChild(row);
-      }
-    }
-
     function renderReview(items, unreadable) {
       proposals = items || [];
       reviewList.replaceChildren();
       if (unreadable) {
         reviewStatus.textContent = "One record could not be read.";
         reviewStatus.className = "err";
-      } else if (!proposals.length) {
-        reviewStatus.textContent = "";
-        reviewStatus.className = "";
       } else {
         reviewStatus.textContent = "";
         reviewStatus.className = "";
       }
       if (!proposals.length) {
         const empty = document.createElement("p");
-        empty.className = "preview";
+        empty.className = "doc-meta";
         empty.textContent = "No pending changes.";
-        reviewList.appendChild(empty);
+        reviewList.append(empty);
         return;
       }
       for (const item of proposals) {
@@ -319,7 +694,7 @@
           const failed = document.createElement("span");
           failed.className = "format-failed";
           failed.textContent = "Formatting failed";
-          row.appendChild(failed);
+          row.append(failed);
         }
         if (item.op !== "delete") {
           const edit = document.createElement("button");
@@ -328,7 +703,7 @@
           edit.textContent = "Edit";
           edit.disabled = rebuilding;
           edit.addEventListener("click", () => openEditor(item));
-          row.appendChild(edit);
+          row.append(edit);
         }
         const approve = document.createElement("button");
         approve.type = "button";
@@ -342,7 +717,7 @@
         reject.disabled = rebuilding;
         reject.addEventListener("click", () => rejectProposal(item.target));
         row.append(approve, reject);
-        reviewList.appendChild(row);
+        reviewList.append(row);
       }
     }
 
@@ -352,6 +727,7 @@
       editor.hidden = false;
       editorStatus.textContent = item.format_error || "";
       editorStatus.className = item.format_error ? "err" : "";
+      editor.scrollIntoView({ block: "nearest" });
       draft.focus();
     }
 
@@ -364,7 +740,7 @@
 
     async function refreshLibrary() {
       if (isOffline()) {
-        setLibStatus("You're offline.", "err");
+        setLibStatus(OFFLINE_MSG, "err");
         return;
       }
       try {
@@ -377,27 +753,26 @@
         }
         if (body.rebuilding) {
           setRebuildLock(true);
-          renderDocs(body.docs || []);
+          renderDocs(body.docs || [], body.num_chunks);
           setLibStatus("Rebuilding…");
           startRebuildPoll();
           return;
         }
         stopRebuildPoll();
         setRebuildLock(false);
-        renderDocs(body.docs || []);
-        const n = body.num_chunks;
+        renderDocs(body.docs || [], body.num_chunks);
         const ahead = (body.docs || []).some((doc) => doc.state !== "indexed");
-        let line = n != null ? `${body.docs.length} files · ${n} chunks indexed` : "Ready";
-        if (ahead) line += " · Re-index to update search";
-        setLibStatus(line);
+        renderStats(ahead);
+        if (ahead) setLibStatus("Re-index to update search.");
+        else setLibStatus("");
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        setLibStatus(OFFLINE_MSG, "err");
       }
     }
 
     async function refreshReview() {
       if (isOffline()) {
-        reviewStatus.textContent = "You're offline.";
+        reviewStatus.textContent = OFFLINE_MSG;
         reviewStatus.className = "err";
         return;
       }
@@ -412,7 +787,7 @@
         }
         renderReview(body.proposals || [], body.unreadable || 0);
       } catch (err) {
-        reviewStatus.textContent = "You're offline.";
+        reviewStatus.textContent = OFFLINE_MSG;
         reviewStatus.className = "err";
       }
     }
@@ -424,8 +799,8 @@
     }
 
     async function removeDoc(name) {
-      if (!confirm(`Stage deletion of ${name}? It stays on disk and searchable until you approve it and re-index.`)) return;
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      if (!confirm("Stage deletion of " + name + "? It stays on disk and searchable until you approve it and re-index.")) return;
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
       try {
         const res = await fetch("/api/docs/" + encPath(name), { method: "DELETE" });
         const body = await res.json().catch(() => ({}));
@@ -437,11 +812,11 @@
           return;
         }
         if (!res.ok) { setLibStatus(detail(body, "Delete failed"), "err"); return; }
-        renderDocs(body.docs);
+        renderDocs(body.docs, body.num_chunks);
         renderReview(body.proposals || [], body.unreadable || 0);
         setLibStatus("Staged for review.");
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        setLibStatus(OFFLINE_MSG, "err");
       }
     }
 
@@ -452,11 +827,8 @@
         reviewStatus.className = "err";
         return;
       }
-      if (pending) {
-        openEditor(pending);
-        return;
-      }
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      if (pending) { openEditor(pending); return; }
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
       try {
         const res = await fetch("/api/docs/" + encPath(name));
         const body = await res.json().catch(() => ({}));
@@ -467,7 +839,7 @@
         }
         openEditor({ target: name, body: body.body || "", format_error: null });
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        setLibStatus(OFFLINE_MSG, "err");
       }
     }
 
@@ -483,10 +855,7 @@
     }
 
     function showEditorError(res, body, fallback) {
-      if (res.status === 401) {
-        showLock(SESSION_ENDED);
-        return;
-      }
+      if (res.status === 401) { showLock(SESSION_ENDED); return; }
       if (res.status === 409 && detail(body, "") === "Index is rebuilding. Try again when it finishes.") {
         setRebuildLock(true);
         editorStatus.textContent = "Index is rebuilding. Try again when it finishes.";
@@ -498,25 +867,62 @@
       editorStatus.className = "err";
     }
 
+    function pickFiles() {
+      if (rebuilding) return;
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
+      fileInput.click();
+    }
+
+    async function uploadFiles(files) {
+      if (!files || !files.length) return;
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
+      const fd = new FormData();
+      for (const file of files) fd.append("files", file);
+      try {
+        const res = await fetch("/api/docs", { method: "POST", body: fd });
+        fileInput.value = "";
+        const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
+        if (res.status === 409) {
+          setRebuildLock(true);
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
+        if (body.docs) renderDocs(body.docs, body.num_chunks);
+        if (body.proposals) renderReview(body.proposals, body.unreadable || 0);
+        if (res.status === 207 || (body.errors && body.errors.length)) {
+          const msg = (body.errors || []).map((item) => item.message).filter(Boolean).join(" ") || "Upload failed";
+          setLibStatus(msg, "err");
+          return;
+        }
+        if (!res.ok) { setLibStatus(detail(body, "Upload failed"), "err"); return; }
+        setLibStatus("Staged for review.");
+      } catch (err) {
+        fileInput.value = "";
+        setLibStatus(OFFLINE_MSG, "err");
+      }
+    }
+
     saveBtn.addEventListener("click", async () => {
       if (!openTarget) return;
-      if (isOffline()) { editorStatus.textContent = "You're offline."; editorStatus.className = "err"; return; }
+      if (isOffline()) { editorStatus.textContent = OFFLINE_MSG; editorStatus.className = "err"; return; }
       try {
         const { res, body } = await putDraft();
         if (!res.ok) { showEditorError(res, body, "Save failed"); return; }
-        renderDocs(body.docs || []);
+        renderDocs(body.docs || [], body.num_chunks);
         renderReview(body.proposals || [], body.unreadable || 0);
         editorStatus.textContent = "Draft saved.";
         editorStatus.className = "";
       } catch (err) {
-        editorStatus.textContent = "You're offline.";
+        editorStatus.textContent = OFFLINE_MSG;
         editorStatus.className = "err";
       }
     });
 
     formatBtn.addEventListener("click", async () => {
       if (!openTarget) return;
-      if (isOffline()) { editorStatus.textContent = "You're offline."; editorStatus.className = "err"; return; }
+      if (isOffline()) { editorStatus.textContent = OFFLINE_MSG; editorStatus.className = "err"; return; }
       try {
         const saved = await putDraft();
         if (saved.res.status === 401) return;
@@ -525,19 +931,19 @@
         const body = await res.json().catch(() => ({}));
         if (sessionEnded(res)) return;
         if (!res.ok) { showEditorError(res, body, "Formatting failed"); return; }
-        renderDocs(body.docs || []);
+        renderDocs(body.docs || [], body.num_chunks);
         renderReview(body.proposals || [], body.unreadable || 0);
         if (body.proposal) openEditor(body.proposal);
         editorStatus.textContent = "Formatted. Approve to write the live file.";
         editorStatus.className = "";
       } catch (err) {
-        editorStatus.textContent = "You're offline.";
+        editorStatus.textContent = OFFLINE_MSG;
         editorStatus.className = "err";
       }
     });
 
     async function approveProposal(name) {
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
       try {
         if (openTarget === name && !editor.hidden) {
           const saved = await putDraft();
@@ -558,17 +964,17 @@
           else setLibStatus(detail(body, "Approve failed"), "err");
           return;
         }
-        renderDocs(body.docs || []);
+        renderDocs(body.docs || [], body.num_chunks);
         renderReview(body.proposals || [], body.unreadable || 0);
         if (openTarget === name) closeEditor();
         setLibStatus("Approved. Re-index to update search.", "ok");
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        setLibStatus(OFFLINE_MSG, "err");
       }
     }
 
     async function rejectProposal(name) {
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
       try {
         const res = await fetch("/api/review/" + encPath(name), { method: "DELETE" });
         const body = await res.json().catch(() => ({}));
@@ -580,12 +986,12 @@
           return;
         }
         if (!res.ok) { setLibStatus(detail(body, "Reject failed"), "err"); return; }
-        renderDocs(body.docs || []);
+        renderDocs(body.docs || [], body.num_chunks);
         renderReview(body.proposals || [], body.unreadable || 0);
         if (openTarget === name) closeEditor();
         setLibStatus("Rejected.");
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        setLibStatus(OFFLINE_MSG, "err");
       }
     }
 
@@ -595,7 +1001,7 @@
 
     reloadBtn.addEventListener("click", async () => {
       if (!openTarget) return;
-      if (isOffline()) { editorStatus.textContent = "You're offline."; editorStatus.className = "err"; return; }
+      if (isOffline()) { editorStatus.textContent = OFFLINE_MSG; editorStatus.className = "err"; return; }
       try {
         const res = await fetch("/api/docs/" + encPath(openTarget));
         const body = await res.json().catch(() => ({}));
@@ -610,52 +1016,36 @@
         editorStatus.textContent = "Loaded the live file. Save draft to keep it.";
         editorStatus.className = "";
       } catch (err) {
-        editorStatus.textContent = "You're offline.";
+        editorStatus.textContent = OFFLINE_MSG;
         editorStatus.className = "err";
       }
     });
 
-    uploadBtn.addEventListener("click", () => {
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
-      fileInput.click();
+    uploadBtn.addEventListener("click", pickFiles);
+    browseBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      pickFiles();
     });
-    fileInput.addEventListener("change", async () => {
-      const files = fileInput.files;
-      if (!files || !files.length) return;
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
-      const fd = new FormData();
-      for (const f of files) fd.append("files", f);
-      try {
-        const res = await fetch("/api/docs", { method: "POST", body: fd });
-        fileInput.value = "";
-        const body = await res.json().catch(() => ({}));
-        if (sessionEnded(res)) return;
-        if (res.status === 409) {
-          setRebuildLock(true);
-          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
-          startRebuildPoll();
-          return;
-        }
-        if (body.docs) renderDocs(body.docs);
-        if (body.proposals) renderReview(body.proposals, body.unreadable || 0);
-        if (res.status === 207 || (body.errors && body.errors.length)) {
-          const msg = (body.errors || []).map((e) => e.message).filter(Boolean).join(" ") || "Upload failed";
-          setLibStatus(msg, "err");
-          return;
-        }
-        if (!res.ok) {
-          setLibStatus(detail(body, "Upload failed"), "err");
-          return;
-        }
-        setLibStatus("Staged for review.");
-      } catch (err) {
-        fileInput.value = "";
-        setLibStatus("You're offline.", "err");
-      }
+    dropZone.addEventListener("click", pickFiles);
+    dropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("drag");
+    });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag"));
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("drag");
+      if (rebuilding) return;
+      uploadFiles(event.dataTransfer.files);
+    });
+    fileInput.addEventListener("change", () => uploadFiles(fileInput.files));
+    docFilter.addEventListener("input", () => {
+      page = 1;
+      renderDocPage();
     });
 
     reindexBtn.addEventListener("click", async () => {
-      if (isOffline()) { setLibStatus("You're offline.", "err"); return; }
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
       setRebuildLock(true);
       setLibStatus("Rebuilding…");
       try {
@@ -672,16 +1062,29 @@
         if (!res.ok) setLibStatus(body.detail || "Re-index failed", "err");
         else setLibStatus("Indexed " + body.num_chunks + " chunks.", "ok");
       } catch (err) {
-        setLibStatus("You're offline.", "err");
+        setLibStatus(OFFLINE_MSG, "err");
         startRebuildPoll();
       }
     });
 
     window.addEventListener("offline", () => {
-      setLibStatus("You're offline.", "err");
-      reviewStatus.textContent = "You're offline.";
+      setLibStatus(OFFLINE_MSG, "err");
+      reviewStatus.textContent = OFFLINE_MSG;
       reviewStatus.className = "err";
     });
+
+    themeToggle.addEventListener("click", () => {
+      const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+      setTheme(next);
+    });
+    lockReveal.addEventListener("click", () => {
+      const show = lockPassword.type === "password";
+      lockPassword.type = show ? "text" : "password";
+      lockReveal.textContent = show ? "Hide" : "Show";
+      lockReveal.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    });
+    previewClose.addEventListener("click", () => previewDialog.close());
+    bindLightDismiss(previewDialog);
 
     async function init() {
       if (document.body.classList.contains("locked")) return;
@@ -757,15 +1160,14 @@
     logoutBtn.addEventListener("click", async () => {
       try {
         const res = await fetch("/api/session/logout", { method: "POST" });
-        if (res.status === 200) {
-          showLock("");
-          return;
-        }
+        if (res.status === 200) { showLock(""); return; }
         if (res.status === 500) setLibStatus(STORE_MSG, "err");
       } catch (err) {
         showLock(OFFLINE_MSG);
       }
     });
+
+    syncThemeLabel();
     lockPassword.focus();
     async function boot() {
       const read = await readSession();

@@ -4,50 +4,132 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ask Northwind</title>
-  <meta name="theme-color" content="#c9a36a" />
+  <meta name="theme-color" content="#0c0e12" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Ask Northwind" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,400;6..72,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/app.css" />
+  <script>
+    (function () {
+      var theme = "dark";
+      try {
+        var saved = localStorage.getItem("northwind-theme");
+        if (saved === "light" || saved === "dark") theme = saved;
+      } catch (err) {}
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
 </head>
-<body class="locked">
-  <main>
-    <header class="site-header">
-      <h1><a href="/">Ask Northwind</a></h1>
-      <nav>
-        <a href="/" class="active">Ask</a>
-        <a href="/library">Library</a>
-      </nav>
+<body class="locked ask-app">
+  <header class="site-header">
+    <a class="brand" href="/">
+      <span class="mark" aria-hidden="true">N</span>
+      <span>
+        <strong>Ask Northwind</strong>
+        <small>Northwind Retail Co. Internal Knowledge Base</small>
+      </span>
+    </a>
+    <nav>
+      <a href="/" class="active">Ask</a>
+      <a href="/library">Library</a>
+    </nav>
+    <div class="header-tools">
+      <button type="button" class="ghost" id="threads-toggle">Threads</button>
+      <button type="button" class="ghost" id="theme-toggle" title="Toggle theme">
+        <span id="theme-toggle-label">Light</span>
+      </button>
       <button type="button" class="ghost" id="logout">Log out</button>
-    </header>
-    <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes. A follow-up keeps this conversation. New chat starts a fresh session.</p>
-    <p id="index-note" class="index-note" hidden></p>
-    <div id="thread"></div>
+    </div>
+  </header>
 
-    <form id="ask-form">
-      <p id="status" class="idle">Ready</p>
-      <textarea id="question" rows="2" autocomplete="off" aria-label="Question"
-                placeholder="How many PTO days do I get per year?"></textarea>
-      <div class="ask-actions">
-        <button type="submit" id="ask">Ask</button>
-        <button type="button" class="ghost" id="new-chat" disabled>New chat</button>
-        <span id="conn">disconnected</span>
-        <button type="button" class="ghost" id="reconnect">Reconnect</button>
+  <div class="workspace">
+    <aside id="threads-aside">
+      <div id="current-thread"></div>
+      <div id="thread-list"></div>
+    </aside>
+    <div class="ask-main">
+      <div id="thread-scroll">
+        <div class="thread-inner">
+          <p class="lede" id="empty-ask">Answers come only from company documents. A follow-up keeps this conversation. New chat starts another one.</p>
+          <p id="index-note" class="index-note" hidden></p>
+          <div id="thread"></div>
+        </div>
       </div>
-    </form>
-    <section id="lock" class="panel">
-      <h2>Locked</h2>
-      <p>Enter the master password to use Ask and Library.</p>
+      <form id="ask-form">
+        <div class="composer">
+          <textarea id="question" rows="2" autocomplete="off" aria-label="Question"
+                    placeholder="How many PTO days do I get per year?"></textarea>
+          <div class="ask-actions">
+            <p id="status" class="idle">Ready</p>
+            <span id="conn">disconnected</span>
+            <span class="send-hint">Enter to send, Shift+Enter for a new line</span>
+            <button type="button" class="ghost" id="reconnect">Reconnect</button>
+            <button type="button" class="ghost" id="new-chat" disabled>New chat</button>
+            <button type="submit" id="ask">Ask</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <section id="lock">
+    <div class="lock-card">
+      <div class="lock-brand">
+        <div class="mark" aria-hidden="true">N</div>
+        <h1>Ask Northwind <span class="vault-tag">Internal vault</span></h1>
+        <p>Restricted access — Northwind Retail Co. internal systems</p>
+      </div>
       <form id="lock-form" method="post" action="/api/session">
-        <input id="lock-password" type="password" autocomplete="current-password"
-               aria-label="Password" />
-        <button type="submit" id="unlock">Unlock</button>
+        <div class="lock-label">
+          <label for="lock-password">Master passphrase</label>
+          <span class="req">Required</span>
+        </div>
+        <div class="lock-field">
+          <input id="lock-password" type="password" autocomplete="current-password" aria-label="Password" />
+          <button type="button" id="lock-reveal" aria-label="Show password">Show</button>
+        </div>
+        <p class="lock-hint">Single master key unlocks the session.</p>
+        <button type="submit" id="unlock">Authenticate session</button>
       </form>
       <button type="button" class="ghost" id="lock-reconnect" hidden>Reconnect</button>
       <p id="lock-status"></p>
-    </section>
-  </main>
+    </div>
+  </section>
+
+  <dialog id="preview" closedby="any" aria-labelledby="preview-title">
+    <div class="sheet">
+      <header>
+        <div>
+          <h2 id="preview-title">Document</h2>
+          <p id="preview-meta"></p>
+        </div>
+        <button type="button" class="ghost" id="preview-close">Close</button>
+      </header>
+      <div id="preview-body" class="preview-body"></div>
+      <footer>
+        <a id="preview-library" href="/library">Open in Library</a>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="threads-dialog" closedby="any" aria-labelledby="threads-dialog-title">
+    <div class="sheet">
+      <header>
+        <h2 id="threads-dialog-title">Conversations</h2>
+        <button type="button" class="ghost" id="threads-close">Close</button>
+      </header>
+      <div id="thread-panel-mobile">
+        <div id="current-thread-mobile"></div>
+        <div id="thread-list-mobile"></div>
+      </div>
+    </div>
+  </dialog>
+
   <script>
     const form = document.getElementById("ask-form");
     const input = document.getElementById("question");
@@ -55,17 +137,36 @@
     const newChatBtn = document.getElementById("new-chat");
     const statusEl = document.getElementById("status");
     const threadEl = document.getElementById("thread");
+    const threadScroll = document.getElementById("thread-scroll");
+    const emptyAsk = document.getElementById("empty-ask");
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
     const indexNote = document.getElementById("index-note");
     const logoutBtn = document.getElementById("logout");
     const lockForm = document.getElementById("lock-form");
     const lockPassword = document.getElementById("lock-password");
+    const lockReveal = document.getElementById("lock-reveal");
     const unlockBtn = document.getElementById("unlock");
     const lockReconnect = document.getElementById("lock-reconnect");
     const lockStatus = document.getElementById("lock-status");
+    const themeToggle = document.getElementById("theme-toggle");
+    const themeLabel = document.getElementById("theme-toggle-label");
+    const currentThreadEl = document.getElementById("current-thread");
+    const threadListEl = document.getElementById("thread-list");
+    const currentThreadMobile = document.getElementById("current-thread-mobile");
+    const threadListMobile = document.getElementById("thread-list-mobile");
+    const threadsToggle = document.getElementById("threads-toggle");
+    const threadsDialog = document.getElementById("threads-dialog");
+    const threadsClose = document.getElementById("threads-close");
+    const previewDialog = document.getElementById("preview");
+    const previewTitle = document.getElementById("preview-title");
+    const previewMeta = document.getElementById("preview-meta");
+    const previewBody = document.getElementById("preview-body");
+    const previewLibrary = document.getElementById("preview-library");
+    const previewClose = document.getElementById("preview-close");
 
-    const STORAGE_KEY = "ask-northwind-chat";
+    const THREADS_KEY = "ask-northwind-threads";
+    const LEGACY_KEY = "ask-northwind-chat";
     const SESSION_ENDED = "Session ended. Enter the password.";
     const STORE_MSG = "Could not store the session.";
     const OFFLINE_MSG = "Not connected. Use Reconnect.";
@@ -82,10 +183,10 @@
     let answering = false;
     let rebuilding = false;
     let epoch = 0;
-    // Bumped on reveal and showLock so an older sessionOk cannot apply.
     let sessionGen = 0;
     let active = null;
     let committed = [];
+    let store = { version: 1, activeId: null, threads: [] };
 
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, (ch) =>
@@ -114,7 +215,7 @@
         );
         s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
         s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
-        s = s.replace(/\[(\d+)\]/g, '<span class="cite">[$1]</span>');
+        s = s.replace(/\[(\d+)\]/g, '<button type="button" class="cite" data-cite="$1">[$1]</button>');
         return s;
       }).join("");
     }
@@ -137,13 +238,13 @@
       let text = String(src || "").replace(/\r\n/g, "\n");
       text = text.replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => {
         const i = fences.length;
-        fences.push(`<pre><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
+        fences.push(`<pre tabindex="0"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
         return `\n\n%%FENCE${i}%%\n\n`;
       });
       const open = text.match(/```[\w-]*\n?([\s\S]*)$/);
       if (open) {
         const i = fences.length;
-        fences.push(`<pre><code>${escapeHtml(open[1])}</code></pre>`);
+        fences.push(`<pre tabindex="0"><code>${escapeHtml(open[1])}</code></pre>`);
         text = text.slice(0, open.index) + `\n\n%%FENCE${i}%%\n\n`;
       }
 
@@ -152,16 +253,9 @@
       let i = 0;
       while (i < lines.length) {
         const line = lines[i];
-        if (/^\s*$/.test(line)) {
-          i += 1;
-          continue;
-        }
+        if (/^\s*$/.test(line)) { i += 1; continue; }
         const fence = line.trim().match(/^%%FENCE(\d+)%%$/);
-        if (fence) {
-          out.push(fences[Number(fence[1])]);
-          i += 1;
-          continue;
-        }
+        if (fence) { out.push(fences[Number(fence[1])]); i += 1; continue; }
         const heading = line.match(/^(#{1,3})\s+(.+)$/);
         if (heading) {
           const n = heading[1].length;
@@ -169,11 +263,7 @@
           i += 1;
           continue;
         }
-        if (/^ {0,3}([-*_])\1{2,}\s*$/.test(line)) {
-          out.push("<hr>");
-          i += 1;
-          continue;
-        }
+        if (/^ {0,3}([-*_])\1{2,}\s*$/.test(line)) { out.push("<hr>"); i += 1; continue; }
         if (/^>\s?/.test(line)) {
           const quote = [];
           while (i < lines.length && /^>\s?/.test(lines[i])) {
@@ -238,10 +328,264 @@
       return out.join("");
     }
 
+    function encPath(name) {
+      return String(name).split("/").map(encodeURIComponent).join("/");
+    }
+
+    function newId() {
+      if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+      return String(Date.now()) + Math.random().toString(16).slice(2);
+    }
+
+    function validTurn(turn) {
+      return turn && typeof turn.question === "string" && typeof turn.answer === "string" && turn.answer.trim();
+    }
+
+    function snapshotTurn(turn) {
+      return {
+        question: turn.question,
+        answer: turn.answer,
+        ranking: turn.ranking || "vector",
+        query: turn.query || "",
+        chunks: Array.isArray(turn.chunks) ? turn.chunks : [],
+      };
+    }
+
+    function activeThread() {
+      return store.threads.find((item) => item.id === store.activeId) || null;
+    }
+
+    function ensureActive() {
+      const found = activeThread();
+      if (found) return found;
+      const thread = { id: newId(), title: "", updatedAt: Date.now(), turns: [] };
+      store.threads.unshift(thread);
+      store.activeId = thread.id;
+      return thread;
+    }
+
+    function saveStore() {
+      const current = activeThread();
+      let rest = store.threads.filter((item) => item.id !== store.activeId && item.turns.length);
+      rest.sort((a, b) => b.updatedAt - a.updatedAt);
+      if (rest.length > 39) rest = rest.slice(0, 39);
+      store.threads = current ? [current, ...rest] : rest.slice(0, 40);
+      try {
+        localStorage.setItem(THREADS_KEY, JSON.stringify({
+          version: 1,
+          activeId: store.activeId,
+          threads: store.threads,
+        }));
+      } catch (err) {}
+    }
+
+    function importLegacy() {
+      try {
+        const raw = JSON.parse(sessionStorage.getItem(LEGACY_KEY) || "null");
+        if (!raw || !Array.isArray(raw.turns)) return;
+        const turns = raw.turns.filter(validTurn).map(snapshotTurn);
+        if (!turns.length) return;
+        const id = newId();
+        store.threads = [{ id, title: turns[0].question, updatedAt: Date.now(), turns }];
+        store.activeId = id;
+        sessionStorage.removeItem(LEGACY_KEY);
+        saveStore();
+      } catch (err) {}
+    }
+
+    function loadStore() {
+      let text = null;
+      try { text = localStorage.getItem(THREADS_KEY); } catch (err) {}
+      if (text) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && parsed.version === 1 && Array.isArray(parsed.threads)) {
+            store.threads = parsed.threads.filter((item) =>
+              item && typeof item.id === "string" && Array.isArray(item.turns)
+            ).map((item) => ({
+              id: item.id,
+              title: typeof item.title === "string" ? item.title : "",
+              updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : 0,
+              turns: item.turns.filter(validTurn).map(snapshotTurn),
+            }));
+            store.activeId = typeof parsed.activeId === "string" ? parsed.activeId : null;
+          }
+        } catch (err) {}
+      } else {
+        importLegacy();
+      }
+      if (!store.threads.some((item) => item.id === store.activeId)) {
+        const newest = store.threads.filter((item) => item.turns.length)
+          .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        store.activeId = newest ? newest.id : null;
+      }
+    }
+
+    function threadMeta(thread) {
+      if (!thread || !thread.turns.length) return "No answers yet";
+      const last = thread.turns[thread.turns.length - 1];
+      const n = Array.isArray(last.chunks) ? last.chunks.length : 0;
+      const clock = new Date(thread.updatedAt || Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return n + (n === 1 ? " excerpt" : " excerpts") + " · " + clock;
+    }
+
+    function fillThreadColumn(currentHost, listHost) {
+      currentHost.replaceChildren();
+      const currentLabel = document.createElement("p");
+      currentLabel.className = "side-label";
+      currentLabel.textContent = "Current thread";
+      const card = document.createElement("div");
+      card.className = "current-card";
+      const thread = activeThread();
+      const title = document.createElement("p");
+      title.className = "current-title";
+      title.textContent = thread && thread.title ? thread.title : "New conversation";
+      const meta = document.createElement("p");
+      meta.className = "current-meta";
+      meta.textContent = threadMeta(thread);
+      card.append(title, meta);
+      currentHost.append(currentLabel, card);
+
+      listHost.replaceChildren();
+      const recentLabel = document.createElement("p");
+      recentLabel.className = "side-label";
+      recentLabel.textContent = "Recent conversations";
+      listHost.append(recentLabel);
+      const recent = store.threads
+        .filter((item) => item.id !== store.activeId && item.turns.length)
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      if (!recent.length) {
+        const empty = document.createElement("p");
+        empty.className = "side-empty";
+        empty.textContent = "No earlier conversations.";
+        listHost.append(empty);
+        return;
+      }
+      for (const item of recent) {
+        const row = document.createElement("div");
+        row.className = "recent-row";
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "recent-open";
+        open.textContent = item.title || item.turns[0].question;
+        open.addEventListener("click", () => openThread(item.id));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "recent-remove";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", "Remove " + (item.title || "conversation"));
+        remove.addEventListener("click", () => removeThread(item.id));
+        row.append(open, remove);
+        listHost.append(row);
+      }
+    }
+
+    function renderThreads() {
+      fillThreadColumn(currentThreadEl, threadListEl);
+      fillThreadColumn(currentThreadMobile, threadListMobile);
+    }
+
+    function closeThreads() {
+      if (threadsDialog.open) threadsDialog.close();
+    }
+
+    function persist() {
+      const thread = ensureActive();
+      thread.turns = committed.map(snapshotTurn);
+      if (thread.turns.length) {
+        thread.title = thread.turns[0].question;
+        thread.updatedAt = Date.now();
+      }
+      saveStore();
+      renderThreads();
+    }
+
+    function noteQuestion(question) {
+      const thread = ensureActive();
+      if (!thread.turns.length) thread.title = question;
+      thread.updatedAt = Date.now();
+      saveStore();
+      renderThreads();
+    }
+
+    function paintThread() {
+      threadEl.replaceChildren();
+      committed.forEach((turn) => renderSaved(turn));
+      syncEmpty();
+      threadScroll.scrollTop = threadScroll.scrollHeight;
+    }
+
+    function openThread(id) {
+      if (id === store.activeId) { closeThreads(); return; }
+      const next = store.threads.find((item) => item.id === id);
+      if (!next) return;
+      const wasAnswering = answering;
+      epoch += 1;
+      active = null;
+      persist();
+      store.activeId = id;
+      committed = next.turns.map(snapshotTurn);
+      paintThread();
+      saveStore();
+      renderThreads();
+      syncComposer();
+      closeThreads();
+      input.value = "";
+      if (wasAnswering && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ cancel: true }));
+      } else {
+        setBusy(false);
+        if (!rebuilding) setStatus("Ready", "idle");
+      }
+      input.focus();
+    }
+
+    function removeThread(id) {
+      if (id === store.activeId) return;
+      store.threads = store.threads.filter((item) => item.id !== id);
+      saveStore();
+      renderThreads();
+    }
+
+    function bindLightDismiss(dialog) {
+      if ("closedBy" in HTMLDialogElement.prototype) return;
+      dialog.addEventListener("click", (event) => {
+        if (event.target !== dialog) return;
+        const rect = dialog.getBoundingClientRect();
+        const inside = rect.top <= event.clientY && event.clientY <= rect.top + rect.height
+          && rect.left <= event.clientX && event.clientX <= rect.left + rect.width;
+        if (!inside) dialog.close();
+      });
+    }
+
+    function sectionName(heading) {
+      if (!heading || typeof heading !== "string") return "";
+      const parts = heading.split(" > ");
+      return parts[parts.length - 1];
+    }
+
+    function syncThemeLabel() {
+      const theme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+      themeLabel.textContent = theme === "dark" ? "Light" : "Dark";
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = theme === "dark" ? "#0c0e12" : "#f6f5f2";
+    }
+
+    function setTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+      try { localStorage.setItem("northwind-theme", theme); } catch (err) {}
+      syncThemeLabel();
+    }
+
     function setConn(state) {
       connEl.className = state;
       connEl.textContent = state;
       reconnectBtn.classList.toggle("show", state !== "connected");
+    }
+
+    function syncEmpty() {
+      emptyAsk.hidden = threadEl.childElementCount > 0;
     }
 
     function syncComposer() {
@@ -252,6 +596,7 @@
       input.placeholder = committed.length
         ? "Ask a follow-up…"
         : "How many PTO days do I get per year?";
+      syncEmpty();
     }
 
     function setBusy(busy) {
@@ -284,57 +629,93 @@
       if (locked) setStatus(REBUILD_MSG, "err");
     }
 
-    function persist() {
-      try {
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ turns: committed }));
-      } catch (err) {
-        // The thread still lives in this page if storage is unavailable.
-      }
-    }
-
-    function loadCommitted() {
-      try {
-        const raw = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null");
-        if (!raw || !Array.isArray(raw.turns)) return [];
-        return raw.turns.filter((turn) =>
-          turn && typeof turn.question === "string" && typeof turn.answer === "string" && turn.answer.trim()
-        );
-      } catch (err) {
-        return [];
-      }
-    }
-
     function closeExcerpts() {
-      threadEl.querySelectorAll("details").forEach((node) => {
-        node.open = false;
-      });
+      threadEl.querySelectorAll("details").forEach((node) => { node.open = false; });
     }
 
-    function appendTurn(question) {
+    function fillSummary(summary, ranking, count, open) {
+      summary.replaceChildren();
+      const left = document.createElement("span");
+      left.className = "context-label";
+      const dot = document.createElement("span");
+      dot.className = "live-dot";
+      dot.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.textContent = "Retrieved context";
+      const order = document.createElement("span");
+      order.className = "context-order";
+      if (ranking === "rerank") order.textContent = "Ordered by the reranker.";
+      else if (ranking) order.textContent = "Vector order — reranker scores were below 0.";
+      left.append(dot, name, order);
+      const right = document.createElement("span");
+      right.className = "context-aside";
+      if (count) {
+        const badge = document.createElement("span");
+        badge.className = "count-pill";
+        badge.textContent = "Top " + count;
+        right.append(badge);
+      }
+      const toggle = document.createElement("span");
+      toggle.className = "context-toggle";
+      toggle.textContent = open ? "Collapse" : "Expand";
+      right.append(toggle);
+      summary.append(left, right);
+    }
+
+    function appendTurn(question, options) {
       closeExcerpts();
       const article = document.createElement("article");
       article.className = "turn";
-      const you = document.createElement("p");
-      you.className = "who";
-      you.textContent = "You";
-      const asked = document.createElement("p");
+      const asked = document.createElement("h2");
       asked.className = "user-q";
       asked.textContent = question;
-      const bot = document.createElement("p");
-      bot.className = "who";
-      bot.textContent = "Northwind";
       const details = document.createElement("details");
-      details.open = true;
+      details.className = "context";
+      details.open = false;
       const summary = document.createElement("summary");
-      summary.textContent = "Excerpts";
+      fillSummary(summary, "", 0, false);
       const excerpts = document.createElement("div");
       excerpts.className = "chunks";
       details.append(summary, excerpts);
+      details.addEventListener("toggle", () => {
+        const label = summary.querySelector(".context-toggle");
+        if (label) label.textContent = details.open ? "Collapse" : "Expand";
+      });
+      const bot = document.createElement("p");
+      bot.className = "who";
+      bot.textContent = "Northwind knowledge synthesis";
       const answer = document.createElement("div");
       answer.className = "answer";
-      article.append(you, asked, bot, details, answer);
+      answer.addEventListener("click", (event) => {
+        const cite = event.target.closest("button.cite");
+        if (!cite || !answer.contains(cite)) return;
+        details.open = true;
+        const card = excerpts.querySelector('[data-n="' + cite.dataset.cite + '"]');
+        if (card) card.scrollIntoView({ block: "nearest" });
+      });
+      const tools = document.createElement("div");
+      tools.className = "answer-tools";
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "ghost";
+      copy.textContent = "Copy markdown";
+      copy.addEventListener("click", async () => {
+        const text = answer.dataset.md || "";
+        try {
+          await navigator.clipboard.writeText(text);
+          copy.textContent = "Copied";
+        } catch (err) {
+          copy.textContent = "Copy failed";
+        }
+        setTimeout(() => { copy.textContent = "Copy markdown"; }, 1200);
+      });
+      tools.append(copy);
+      article.append(asked, details, bot, answer, tools);
       threadEl.append(article);
-      article.scrollIntoView({ block: "end" });
+      syncEmpty();
+      if (!options || options.scroll !== false) {
+        article.scrollIntoView({ block: "end" });
+      }
       return {
         epoch,
         question,
@@ -343,6 +724,7 @@
         chunks: [],
         md: "",
         details,
+        summary,
         excerptsEl: excerpts,
         answerEl: answer,
       };
@@ -351,6 +733,7 @@
     function showSources(turn, chunks, ranking) {
       turn.chunks = chunks;
       turn.ranking = ranking;
+      fillSummary(turn.summary, ranking, chunks.length, turn.details.open);
       const el = turn.excerptsEl;
       el.replaceChildren();
       if (turn.query && turn.query !== turn.question) {
@@ -366,24 +749,73 @@
         el.append(empty);
         return;
       }
-      const note = document.createElement("p");
-      note.className = "preview";
-      note.textContent = ranking === "rerank"
-        ? "Ordered by the reranker."
-        : "Reranker scores were below 0, so these stay in vector-search order.";
-      el.append(note);
       for (const chunk of chunks) {
         const card = document.createElement("article");
         card.className = "chunk";
+        card.dataset.n = String(chunk.n);
         const meta = document.createElement("div");
         meta.className = "meta";
+        const left = document.createElement("div");
+        const num = document.createElement("span");
+        num.className = "cite-n";
+        num.textContent = "[" + chunk.n + "]";
+        const file = document.createElement("button");
+        file.type = "button";
+        file.className = "source-file";
+        file.textContent = chunk.source_file || "document";
+        file.addEventListener("click", () => openPreview(chunk.source_file));
+        const section = document.createElement("span");
+        section.className = "kind";
+        const heading = sectionName(chunk.heading);
         const kind = chunk.expanded ? "section" : "excerpt";
-        meta.textContent = `[${chunk.n}] ${chunk.source_file} · ${kind}`;
-        const preview = document.createElement("div");
+        section.textContent = heading ? kind + ": " + heading : kind;
+        left.append(num, file, section);
+        const right = document.createElement("div");
+        if (typeof chunk.rerank_score === "number" && Number.isFinite(chunk.rerank_score)) {
+          const score = document.createElement("span");
+          score.className = "score-pill";
+          score.textContent = "score " + chunk.rerank_score.toFixed(2);
+          right.append(score);
+        }
+        meta.append(left, right);
+        const preview = document.createElement("p");
         preview.className = "preview";
-        preview.textContent = chunk.preview;
+        preview.textContent = chunk.preview || "";
         card.append(meta, preview);
         el.append(card);
+      }
+    }
+
+    async function openPreview(name) {
+      if (!name) return;
+      previewTitle.textContent = name;
+      previewMeta.textContent = "Loading…";
+      previewBody.replaceChildren();
+      previewLibrary.href = "/library?doc=" + encodeURIComponent(name);
+      if (!previewDialog.open) previewDialog.showModal();
+      try {
+        const res = await fetch("/api/docs/" + encPath(name));
+        if (res.status === 401) {
+          previewDialog.close();
+          showLock(SESSION_ENDED);
+          return;
+        }
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 404) {
+          previewMeta.textContent = "";
+          previewBody.textContent = "This file is no longer in the library.";
+          return;
+        }
+        if (!res.ok) {
+          previewMeta.textContent = "";
+          previewBody.textContent = typeof body.detail === "string" ? body.detail : "Could not open the file.";
+          return;
+        }
+        previewMeta.textContent = "View only";
+        previewBody.innerHTML = renderMarkdown(body.body || "");
+      } catch (err) {
+        previewMeta.textContent = "";
+        previewBody.textContent = OFFLINE_MSG;
       }
     }
 
@@ -411,9 +843,10 @@
     }
 
     function renderSaved(turn) {
-      const view = appendTurn(turn.question);
+      const view = appendTurn(turn.question, { scroll: false });
       view.query = turn.query || "";
       view.md = turn.answer;
+      view.answerEl.dataset.md = turn.answer;
       view.answerEl.innerHTML = renderMarkdown(turn.answer);
       showSources(view, Array.isArray(turn.chunks) ? turn.chunks : [], turn.ranking || "vector");
       view.details.open = false;
@@ -439,10 +872,7 @@
       try {
         const res = await fetch("/api/status");
         if (document.body.classList.contains("locked")) return;
-        if (res.status === 401) {
-          showLock(SESSION_ENDED);
-          return;
-        }
+        if (res.status === 401) { showLock(SESSION_ENDED); return; }
         const body = await res.json().catch(() => ({}));
         setIndexNote(Boolean(body.stale));
         if (body.rebuilding) {
@@ -463,10 +893,7 @@
       try {
         const res = await fetch("/api/status");
         if (document.body.classList.contains("locked")) return;
-        if (res.status === 401) {
-          showLock(SESSION_ENDED);
-          return;
-        }
+        if (res.status === 401) { showLock(SESSION_ENDED); return; }
         const body = await res.json().catch(() => ({}));
         setIndexNote(Boolean(body.stale));
         if (body.rebuilding) {
@@ -476,20 +903,19 @@
           setRebuildLock(false);
           if (!answering) setStatus("Ready", "idle");
         }
-      } catch (err) {
-        // Idle or offline: do not poll.
-      }
+      } catch (err) {}
     }
 
     function showLock(message) {
       sessionGen += 1;
       document.body.classList.add("locked");
       stopRebuildPoll();
+      if (previewDialog.open) previewDialog.close();
+      closeThreads();
       lockReconnect.hidden = true;
       lockStatus.textContent = message;
       lockStatus.className = message ? "err" : "";
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        // Set before close so onclose does not call showLock again.
         suppressClose = true;
         ws.close();
       }
@@ -542,10 +968,7 @@
         }
         return;
       }
-      if (ok === true) {
-        reveal();
-        return;
-      }
+      if (ok === true) { reveal(); return; }
       if (ok === false) {
         lockStatus.textContent = "";
         lockStatus.className = "";
@@ -561,48 +984,30 @@
 
     function connect() {
       if (document.body.classList.contains("locked")) return;
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        return;
-      }
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(`${proto}://${location.host}/ws`);
       ws.onopen = async () => {
         setConn("connected");
         const read = await readSession();
         if (read.stale) return;
-        const ok = read.ok;
-        if (ok === false) {
-          showLock(SESSION_ENDED);
-          return;
-        }
-        if (ok === "store" && !document.body.classList.contains("locked")) {
-          setStatus(STORE_MSG, "err");
-        }
+        if (read.ok === false) { showLock(SESSION_ENDED); return; }
+        if (read.ok === "store" && !document.body.classList.contains("locked")) setStatus(STORE_MSG, "err");
       };
       ws.onerror = () => setConn("error");
       ws.onclose = async (event) => {
         setConn("disconnected");
         setBusy(false);
-        if (suppressClose) {
-          suppressClose = false;
-          return;
-        }
+        if (suppressClose) { suppressClose = false; return; }
         if (event.code === 1008) {
           if (!document.body.classList.contains("locked")) showLock(SESSION_ENDED);
           return;
         }
         const read = await readSession();
         if (read.stale) return;
-        const ok = read.ok;
-        if (ok === "store") {
-          setStatus(STORE_MSG, "err");
-          return;
-        }
-        if (ok === false) {
-          showLock(SESSION_ENDED);
-          return;
-        }
-        if (ok === null) {
+        if (read.ok === "store") { setStatus(STORE_MSG, "err"); return; }
+        if (read.ok === false) { showLock(SESSION_ENDED); return; }
+        if (read.ok === null) {
           if (!rebuilding) setStatus(OFFLINE_MSG, "err");
           return;
         }
@@ -616,6 +1021,11 @@
 
     function currentTurn() {
       return active && active.epoch === epoch ? active : null;
+    }
+
+    function stickToAnswer(node) {
+      const gap = threadScroll.scrollHeight - threadScroll.scrollTop - threadScroll.clientHeight;
+      if (gap < 160) node.scrollIntoView({ block: "end" });
     }
 
     function handle(event) {
@@ -633,9 +1043,9 @@
       if (event.type === "token") {
         if (!turn || !event.text) return;
         turn.md += event.text;
+        turn.answerEl.dataset.md = turn.md;
         turn.answerEl.innerHTML = renderMarkdown(turn.md);
-        const gap = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
-        if (gap < 160) turn.answerEl.scrollIntoView({ block: "end" });
+        stickToAnswer(turn.answerEl);
         return;
       }
       if (event.type === "done") {
@@ -661,6 +1071,7 @@
         if (!turn) return;
         if (event.message === NO_INFO) {
           turn.md = NO_INFO;
+          turn.answerEl.dataset.md = NO_INFO;
           turn.answerEl.innerHTML = renderMarkdown(NO_INFO);
           commitActive();
           setBusy(false);
@@ -679,11 +1090,12 @@
       const question = input.value.trim();
       if (!question || answering) return;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setStatus("Not connected. Use Reconnect.", "err");
+        setStatus(OFFLINE_MSG, "err");
         return;
       }
       const history = historyPayload();
       active = appendTurn(question);
+      noteQuestion(question);
       input.value = "";
       setStatus("Sending…");
       setBusy(true);
@@ -694,14 +1106,17 @@
       const wasAnswering = answering;
       epoch += 1;
       active = null;
+      persist();
+      store.threads = store.threads.filter((item) => item.turns.length);
+      const thread = { id: newId(), title: "", updatedAt: Date.now(), turns: [] };
+      store.threads.unshift(thread);
+      store.activeId = thread.id;
       committed = [];
       threadEl.replaceChildren();
-      try {
-        sessionStorage.removeItem(STORAGE_KEY);
-      } catch (err) {
-        // The cleared page is enough when storage is unavailable.
-      }
+      saveStore();
+      renderThreads();
       input.value = "";
+      syncEmpty();
       if (wasAnswering && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ cancel: true }));
       } else {
@@ -721,6 +1136,21 @@
     });
     newChatBtn.addEventListener("click", newChat);
     reconnectBtn.addEventListener("click", connect);
+    themeToggle.addEventListener("click", () => {
+      const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+      setTheme(next);
+    });
+    lockReveal.addEventListener("click", () => {
+      const show = lockPassword.type === "password";
+      lockPassword.type = show ? "text" : "password";
+      lockReveal.textContent = show ? "Hide" : "Show";
+      lockReveal.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    });
+    threadsToggle.addEventListener("click", () => threadsDialog.showModal());
+    threadsClose.addEventListener("click", () => threadsDialog.close());
+    previewClose.addEventListener("click", () => previewDialog.close());
+    bindLightDismiss(previewDialog);
+    bindLightDismiss(threadsDialog);
     lockForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       unlockBtn.disabled = true;
@@ -766,24 +1196,24 @@
     logoutBtn.addEventListener("click", async () => {
       try {
         const res = await fetch("/api/session/logout", { method: "POST" });
-        if (res.status === 200) {
-          showLock("");
-          return;
-        }
+        if (res.status === 200) { showLock(""); return; }
         if (res.status === 500) setStatus(STORE_MSG, "err");
       } catch (err) {
         showLock(OFFLINE_MSG);
       }
     });
-    committed = loadCommitted();
-    committed.forEach(renderSaved);
-    const lastDetails = threadEl.querySelector(".turn:last-child details");
-    if (lastDetails) lastDetails.open = true;
-    syncComposer();
     document.addEventListener("visibilitychange", () => {
       if (document.body.classList.contains("locked")) return;
       if (document.visibilityState === "visible") checkRebuildOnLoad();
     });
+
+    syncThemeLabel();
+    loadStore();
+    ensureActive();
+    committed = (activeThread().turns || []).map(snapshotTurn);
+    paintThread();
+    renderThreads();
+    syncComposer();
     lockPassword.focus();
     async function boot() {
       const read = await readSession();

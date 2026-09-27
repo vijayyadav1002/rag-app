@@ -43,7 +43,7 @@ This app does that in two clocks:
 
 3. `retrieve.py` embeds the question with the **same** Nomic model, but prefixed `search_query: ` (not `search_document: `). It asks FAISS for the 20 nearest chunks, then a **cross-encoder** reranker (still MiniLM) scores those 20 as (question, chunk) pairs. If the best score is at least 0, that order is what ships. If the best score is negative, vector order ships instead, and the scores stay attached. Either way the next step sees the top 4.
 4. `generate.py` may widen a hit before the prompt is built. A chunk whose rerank score is at least 0 and within 1.0 of the best score in that list is replaced by its `##` section (the heading plus up to 4,000 characters of body). On the 11 shipped files every section already fits in the 800-character window, so the prompt text matches the chunk until a longer document is indexed. The prompt then says: answer ONLY from these numbered excerpts; cite `[1]`; if it’s not there, say you don’t know. A follow-up is not embedded as typed. It is rewritten into one standalone search question first. The earlier turns go into the answer prompt, not into the vector. `llm.py` sends the prompt to whatever you configured (Claude, Ollama, OpenAI-compatible, …).
-5. `cli.py` prints the answer and whether the reranker ordered the sources. `server.py` + `static/index.html` stream the same pipeline over a WebSocket so you can watch retrieve → sources → tokens. The browser keeps one thread for the tab. A library edit reaches search only after Approve and then Re-index.
+5. `cli.py` prints the answer and whether the reranker ordered the sources. `server.py` + `static/index.html` stream the same pipeline over a WebSocket so you can watch retrieve → sources → tokens. The browser keeps threads in `localStorage`. A library edit reaches search only after Approve and then Re-index.
 
 **Eval is retrieval, not answer grading.** `eval.py` has 20 hand-labeled `(question, source file)` pairs. The metric is recall@k: did the right *document* appear in the top-k chunks? Vector search and ungated rerank each miss a different question at rank 1 (95%) and both hit at 3 and 5 (100%). The shipped confidence gate is 100% at 1, 3, and 5 on this set. The disagreement is the interesting part; it is in Part 7.
 
@@ -179,7 +179,7 @@ RetrievedChunk × up to 4
 answer text + source list
    │
    ├─ cli.py                 print and exit (one question, no history)
-   └─ server.py / index.html WebSocket events, one thread in the tab
+   └─ server.py / index.html WebSocket events, threads kept in the browser
 
                     LIBRARY (separate from a question)
 upload / edit / delete → review/*.json → Approve writes DOCS_DIR
@@ -588,9 +588,9 @@ One page: a thread of turns, a composer stuck to the bottom, connection state be
 
 - Sends `{ "question", "history" }`. `history` is the committed questions and answers already on screen. The first question sends an empty list.
 - A follow-up first shows “Reading the conversation…”. `generate.py` rewrites that follow-up into one standalone search question, then retrieves with that string. The answer prompt still contains the recent turns (8 messages, 1,500 characters each, 6,000 total). The page keeps showing the whole thread. Citation numbers apply only to this turn’s excerpts. If the rewrite fails, search uses the previous user question plus the new one, capped at 400 characters.
-- On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). The meta line is `[n] file · section` or `[n] file · excerpt`. A note says “Ordered by the reranker.” or “Reranker scores were below 0, so these stay in vector-search order.” A rewritten search is labeled `Follow-up searched as: …`.
+- On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). Retrieved context starts collapsed. The meta line is the file, `section` or `excerpt`, the heading, and `score` plus the logit when the reranker produced one. The header says “Ordered by the reranker.” or “Vector order — reranker scores were below 0.” A rewritten search is labeled `Follow-up searched as: …`. The file name opens that markdown read-only.
 - On `token`, appends to that turn’s Markdown buffer and re-renders it as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible. Answer headings use `text-transform: none` so they do not inherit the panel label style.
-- The thread lives in `sessionStorage` (`ask-northwind-chat`) so a reload keeps the session. **New chat** deletes it. The server stores nothing, and there is no list of old conversations. Logout does not clear `ask-northwind-chat`.
+- Threads live in `localStorage` (`ask-northwind-threads`) so a reload keeps the active conversation and the recent list. **New chat** starts another thread and leaves the previous one in that list. The server stores nothing. Logout does not clear the threads. An older tab session under `ask-northwind-chat` is imported once.
 - The lock hides the composer until `GET /api/session` is 200. A 401, or a socket close because the session died, shows the lock instead of a crash. `visibilitychange` does not call `/api/status` while the body is locked.
 - `GET /api/status` sets `stale` when any library row is not `indexed`. Ask then shows: “The library has changed since the last Re-index. Answers still use the previous index.” The link goes to `/library`.
 - `{ "cancel": true }` stops an answer still in flight. Reconnect is manual. The offline line is “Not connected. Use Reconnect.” No retry loop.
@@ -762,11 +762,11 @@ Sentence-transformers, FAISS, and the Anthropic/OpenAI SDKs are native here. The
 
 **“What would you add in production?”** (from the README, be honest you did not build them)
 
-Hybrid BM25 + vectors (exact tokens: error codes, SKUs). Multi-query expansion beyond the one standalone follow-up question this demo already writes. Metadata filters (dept, effective date). Chunk-size sweep on eval. Larger eval from real tickets. Answer-level metrics. Citation verification. Caching. PII / prompt-injection guardrails. A stored list of past chats.
+Hybrid BM25 + vectors (exact tokens: error codes, SKUs). Multi-query expansion beyond the one standalone follow-up question this demo already writes. Metadata filters (dept, effective date). Chunk-size sweep on eval. Larger eval from real tickets. Answer-level metrics. Citation verification. Caching. PII / prompt-injection guardrails. A server-side list of past chats. The browser already keeps recent threads locally.
 
 **“Show me a bug in your own system.”**
 
-Ungated rerank prefers IT security over equipment return for the laptop query; the gate keeps vector order because that logit is negative, and nothing in that list expands. Eval labels files not spans. We still return neighbors when every score is negative — the gate chooses order, it does not abstain. The index can still be stale; Ask and Library say so, and search changes only on Re-index. Nomic prefixes are easy to drop on a rewrite. Small local models skip citations. The page can show a long thread, but the prompt keeps four exchanges and 6,000 characters, and the server does not remember you after New chat. That’s the demo, not a cover-up.
+Ungated rerank prefers IT security over equipment return for the laptop query; the gate keeps vector order because that logit is negative, and nothing in that list expands. Eval labels files not spans. We still return neighbors when every score is negative — the gate chooses order, it does not abstain. The index can still be stale; Ask and Library say so, and search changes only on Re-index. Nomic prefixes are easy to drop on a rewrite. Small local models skip citations. The page can show a long thread, and this browser can reopen a recent one, but the prompt keeps four exchanges and 6,000 characters, and the server does not remember you after New chat. That’s the demo, not a cover-up.
 
 ---
 
@@ -792,7 +792,7 @@ If you implement those later, keep `chunk.py` / `retrieve.py` / `generate.py` / 
 1. Open `docs/pto_policy.md`, point at `## Accrual`, 15 days / 20 after 5 years.
 2. Run `python retrieve.py "How many PTO days do I get per year?"` and show vector vs rerank lists.
 3. Run `python llm.py` to show which provider resolved, then `python cli.py "How many PTO days do I get per year?"` and show `[1]` next to `pto_policy.md`.
-4. In the UI, ask the same question and pause on the open **Excerpts** — “this is retrieval; the model has not written yet.” Ask “what about contractors?” next and show the standalone search line, then New chat.
+4. In the UI, ask the same question and expand **Retrieved context** — “this is retrieval; the model has not written yet.” Ask “what about contractors?” next and show the standalone search line, then New chat. The first thread stays in Recent conversations.
 5. Ask the laptop-return question in the UI. The excerpts should stay on the equipment policy, with the note that the reranker was below 0. Then run `python retrieve.py` on that question and show the ungated flip to IT security: “this is why the gate exists, and why eval still prints the ungated column.”
 6. Run `python eval.py` and say the three columns: 95% / 95% / 100% at rank 1, and 100% at 3. Name the two ungated misses.
 

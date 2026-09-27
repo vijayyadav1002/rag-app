@@ -265,8 +265,10 @@ def answer_stream(
             {
                 "n": i + 1,
                 "source_file": c.source_file,
+                "heading": c.heading,
                 "preview": chunk_preview(c.text),
                 "expanded": c.expanded,
+                "rerank_score": None if c.rerank_score is None else float(c.rerank_score),
             }
             for i, c in enumerate(chunks)
         ],
