@@ -742,7 +742,7 @@ Full file. Product name is the existing `h1` serif, linking to `/`. It is not a 
         <a href="/library">Library</a>
       </nav>
     </header>
-    <p class="lede">Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes.</p>
+    <p class="lede">Internal assistant for Northwind Answers come only from company docs — you will see which excerpts were retrieved before the model writes.</p>
 
     <form id="ask-form">
       <input id="question" type="text" autocomplete="off"

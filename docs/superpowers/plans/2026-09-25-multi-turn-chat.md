@@ -72,7 +72,7 @@
 - [ ] Render excerpts with `textContent`. Show `Follow-up searched as: …` when `query` is set. Move the `#answer` markdown rules onto `.turn .answer`, keeping heading `text-transform: none` and `color: var(--ink)`.
 - [ ] New chat removes the storage key and the thread. If an answer is running, send `{ "cancel": true }` and leave Ask disabled until `cancelled` or the socket closes. Restore turns on load; open only the last disclosure. Placeholder switches to `Ask a follow-up…` after the first committed turn.
 - [ ] Bump `CACHE` in `sw.js` to `ask-northwind-v9`.
-- [ ] Lede: `Internal assistant for Northwind Retail Co. Answers come only from company docs — you will see which excerpts were retrieved before the model writes. A follow-up keeps this conversation. New chat starts a fresh session.`
+- [ ] Lede: `Internal assistant for Northwind Answers come only from company docs — you will see which excerpts were retrieved before the model writes. A follow-up keeps this conversation. New chat starts a fresh session.`
 
 ### Task 5: Docs and checks
 

@@ -128,7 +128,7 @@ Recall@k is **not** “was the answer correct.” A system can retrieve the righ
 
 ## Part 1 — The problem this app exists to solve
 
-**Use case:** an internal assistant for **Northwind Retail Co.** Employees ask about PTO, sick leave, expenses, IT security, a thermostat product FAQ, a support runbook.
+**Use case:** an internal assistant for **Northwind** Employees ask about PTO, sick leave, expenses, IT security, a thermostat product FAQ, a support runbook.
 
 **Naive alternatives, and why they fail**
 

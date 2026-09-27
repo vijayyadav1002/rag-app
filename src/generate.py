@@ -42,7 +42,7 @@ HISTORY_MAX_CHARS = 6000
 REWRITE_MAX_TOKENS = 80
 RETRIEVAL_QUERY_MAX = 400
 
-SYSTEM_PROMPT = """You are an internal support assistant for Northwind Retail Co. \
+SYSTEM_PROMPT = """You are an internal support assistant for Northwind \
 Answer the user's question using ONLY the numbered source excerpts provided below. \
 
 Rules:

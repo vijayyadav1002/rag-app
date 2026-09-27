@@ -1,7 +1,7 @@
 # Paid Time Off (PTO) Policy
 
 ## Overview
-Full-time employees at Northwind Retail Co. accrue Paid Time Off (PTO) that can be used for vacation, personal days, or minor illness. PTO is separate from the Sick Leave Policy and the Parental Leave Policy.
+Full-time employees at Northwind accrue Paid Time Off (PTO) that can be used for vacation, personal days, or minor illness. PTO is separate from the Sick Leave Policy and the Parental Leave Policy.
 
 ## Accrual
 - Employees accrue 1.25 days of PTO per month, totaling 15 days per year.

@@ -1,7 +1,7 @@
 # Parental Leave Policy
 
 ## Overview
-Northwind Retail Co. provides paid parental leave for employees welcoming a new child through birth, adoption, or foster placement. This is separate from Sick Leave and PTO.
+Northwind provides paid parental leave for employees welcoming a new child through birth, adoption, or foster placement. This is separate from Sick Leave and PTO.
 
 ## Eligibility
 Employees are eligible after 90 days of continuous full-time employment.

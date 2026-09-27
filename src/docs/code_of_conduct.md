@@ -1,7 +1,7 @@
 # Code of Conduct
 
 ## Core Principles
-Northwind Retail Co. employees are expected to act with integrity, respect, and professionalism in all interactions with colleagues, customers, and partners.
+Northwind employees are expected to act with integrity, respect, and professionalism in all interactions with colleagues, customers, and partners.
 
 ## Conflicts of Interest
 Employees must disclose any financial interest in a vendor, competitor, or customer to their manager and Legal before engaging with that party in a business capacity. Undisclosed conflicts of interest may result in termination.

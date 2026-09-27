@@ -5,7 +5,7 @@ New employees must enroll in benefits within 30 days of their start date via the
 
 ## Health Insurance
 - Three medical plan tiers are offered: Bronze, Silver, and Gold, all administered by BlueShield Northwind.
-- Northwind Retail Co. covers 80% of the employee premium and 60% of dependent premiums for the Silver plan.
+- Northwind covers 80% of the employee premium and 60% of dependent premiums for the Silver plan.
 - Dental and vision are separate opt-in plans, fully employee-paid via payroll deduction.
 
 ## 401(k)
