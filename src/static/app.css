@@ -506,8 +506,24 @@ button.cite {
   font-weight: 700;
   vertical-align: baseline;
 }
-.answer-tools { margin-top: 0.55rem; }
+.answer-tools { margin-top: 0.55rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .answer-tools button { font-size: 0.75rem; padding: 0.3rem 0.55rem; }
+.turn-wrong { box-shadow: inset 3px 0 0 var(--err); }
+mark.support { background: var(--amber-soft); color: inherit; }
+.support-miss { margin: 0.35rem 0 0; color: var(--err); font-size: 0.8rem; }
+.vault-line { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.9rem; }
+.scope-label { display: inline-flex; align-items: center; gap: 0.35rem; }
+.scope-label select, .thread-filter, .thread-rename, #phrase-search, #new-folder, #new-name, #rename-dest {
+  background: var(--inset);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-radius: 0.25rem;
+  padding: 0.35rem 0.5rem;
+}
+.thread-filter { width: 100%; margin-bottom: 0.7rem; }
+.thread-rename { width: 100%; }
+.current-actions { display: flex; gap: 0.35rem; margin-top: 0.45rem; }
+.current-actions button { font-size: 0.72rem; padding: 0.25rem 0.45rem; }
 
 #ask-form {
   border-top: 1px solid var(--line);
@@ -705,7 +721,36 @@ button.cite {
 }
 .drop-zone.drag { border-color: var(--amber); }
 .drop-zone p { margin: 0.2rem 0; }
-.drop-zone .fine { color: var(--dim); font-size: 0.72rem; letter-spacing: 0.04em; }
+.drop-zone .fine, #rename-dialog .fine { color: var(--dim); font-size: 0.72rem; letter-spacing: 0.04em; }
+.new-note { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: end; margin-top: 0.9rem; }
+.new-note label, .rename-label { display: grid; gap: 0.25rem; font-size: 0.75rem; color: var(--muted); }
+#phrase-hits { display: grid; gap: 0.35rem; }
+.phrase-hit {
+  justify-content: flex-start;
+  text-align: left;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diff-wrap { flex-basis: 100%; }
+.diff {
+  margin: 0.45rem 0 0;
+  max-height: 14rem;
+  overflow: auto;
+  padding: 0.55rem 0.65rem;
+  background: var(--inset);
+  border-radius: 0.4rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.diff-add { background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.diff-del { background: color-mix(in srgb, var(--err) 18%, transparent); }
+.diff-skip, .diff-same { color: var(--dim); }
+#rename-dialog { width: min(28rem, calc(100vw - 2rem)); }
+#rename-dialog .sheet { height: auto; padding: 1rem 1.1rem 1.2rem; gap: 0.55rem; }
 .drop-zone button {
   background: none;
   border: 0;

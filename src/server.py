@@ -44,9 +44,11 @@ from library import (
     MAX_UPLOAD_FILES,
     UnsafeNameError,
     UploadError,
+    clean_scope,
     index_meta,
     list_docs,
     read_doc,
+    search_phrases,
 )
 from llm import LLMConfigError
 from review import (
@@ -58,6 +60,7 @@ from review import (
     reject as reject_proposal,
     save_draft,
     stage_delete,
+    stage_rename,
     stage_upload,
 )
 from retrieve import _load, reload as reload_index
@@ -442,8 +445,11 @@ def api_status() -> dict:
 
 
 @app.get("/api/docs")
-def api_docs() -> dict:
-    return _docs_body()
+def api_docs(q: str = "") -> dict:
+    body = _docs_body()
+    if q.strip():
+        body["matches"] = search_phrases(q)
+    return body
 
 
 @app.get("/api/docs/{name:path}")
@@ -504,6 +510,24 @@ async def api_save_draft(name: str, request: Request):
         raise HTTPException(400, "Expected JSON body.")
     try:
         proposal = save_draft(name, body)
+    except Exception as exc:
+        _raise_review(exc)
+        raise
+    return {**_library_body(), "proposal": proposal.as_dict()}
+
+
+@app.post("/api/review/{name:path}/rename")
+async def api_rename(name: str, request: Request):
+    _unlocked()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "Expected JSON body.") from exc
+    dest = payload.get("dest") if isinstance(payload, dict) else None
+    if not isinstance(dest, str) or not dest.strip():
+        raise HTTPException(400, "Choose a destination.")
+    try:
+        proposal = stage_rename(name, dest)
     except Exception as exc:
         _raise_review(exc)
         raise
@@ -615,6 +639,7 @@ async def _pump(
     websocket: WebSocket,
     question: str,
     history: object,
+    scope: str | None,
     cancel: threading.Event,
     send_lock: asyncio.Lock,
 ) -> None:
@@ -623,7 +648,7 @@ async def _pump(
 
     def worker() -> None:
         try:
-            for event in answer_stream(question, cancel=cancel, history=history):
+            for event in answer_stream(question, cancel=cancel, history=history, scope=scope):
                 if cancel.is_set():
                     break
                 asyncio.run_coroutine_threadsafe(queue.put(event), loop).result()
@@ -741,17 +766,27 @@ async def ws_ask(websocket: WebSocket) -> None:
             if not still_registered(websocket):
                 return  # drop_sockets already set(); do not clear()
             history = raw.get("history")
+            scope_raw = raw.get("scope")
+            if scope_raw in (None, ""):
+                scope = None
+            else:
+                try:
+                    scope = clean_scope(scope_raw)
+                except UnsafeNameError:
+                    await send({"type": "error", "message": "Choose a folder or a file."})
+                    continue
 
             async def run(
                 question: str = question,
                 history: object = history,
+                scope: str | None = scope,
                 turn_cancel: threading.Event = cancel,
             ) -> None:
                 global _active_answers
                 _active_answers += 1
                 _idle().clear()
                 try:
-                    await _pump(websocket, question, history, turn_cancel, send_lock)
+                    await _pump(websocket, question, history, scope, turn_cancel, send_lock)
                 finally:
                     _active_answers -= 1
                     if _active_answers == 0:

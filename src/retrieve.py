@@ -90,8 +90,33 @@ class RetrievedChunk:
     rank_source: str = "vector"
 
 
-def vector_search(query: str, top_k: int = 20) -> list[RetrievedChunk]:
-    """Stage 1: fast approximate candidate retrieval over the whole corpus."""
+def in_scope(source_file: str, scope: str | None) -> bool:
+    """A file scope is an exact path. A folder scope is that prefix only."""
+    if not scope:
+        return True
+    if scope.lower().endswith(".md"):
+        return source_file == scope
+    prefix = scope.rstrip("/")
+    return source_file == prefix or source_file.startswith(prefix + "/")
+
+
+def _hit(chunk, score: float) -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=chunk.chunk_id,
+        source_file=chunk.source_file,
+        text=chunk.text,
+        vector_score=float(score),
+        heading=getattr(chunk, "heading", "") or "",
+        section_text=getattr(chunk, "section_text", "") or "",
+    )
+
+
+def vector_search(query: str, top_k: int = 20, scope: str | None = None) -> list[RetrievedChunk]:
+    """Stage 1: nearest chunks. `scope` limits the scan to one folder or file.
+
+    The unscoped path is the one eval measures. A scope searches only the
+    matching vectors, so a small folder is not dropped for ranking outside it.
+    """
     _load()
     q_emb = _embedder.encode(
         [QUERY_PREFIX + query], normalize_embeddings=True
@@ -100,22 +125,34 @@ def vector_search(query: str, top_k: int = 20) -> list[RetrievedChunk]:
     with _state_lock:
         index = _index
         chunks = _chunks
+    if scope:
+        allowed = [
+            i
+            for i, chunk in enumerate(chunks)
+            if in_scope(getattr(chunk, "source_file", ""), scope)
+        ]
+        if not allowed:
+            return []
+        vecs = []
+        ids = []
+        for i in allowed:
+            try:
+                vecs.append(index.reconstruct(int(i)))
+            except RuntimeError:
+                continue
+            ids.append(i)
+        if not ids:
+            return []
+        matrix = np.vstack(vecs).astype("float32")
+        sims = matrix @ q_emb[0]
+        order = np.argsort(-sims)[:top_k]
+        return [_hit(chunks[ids[int(pos)]], float(sims[int(pos)])) for pos in order]
     scores, indices = index.search(q_emb, top_k)
     results = []
     for score, idx in zip(scores[0], indices[0]):
         if idx == -1:
             continue
-        c = chunks[idx]
-        results.append(
-            RetrievedChunk(
-                chunk_id=c.chunk_id,
-                source_file=c.source_file,
-                text=c.text,
-                vector_score=float(score),
-                heading=getattr(c, "heading", "") or "",
-                section_text=getattr(c, "section_text", "") or "",
-            )
-        )
+        results.append(_hit(chunks[idx], float(score)))
     return results
 
 
@@ -137,6 +174,7 @@ def retrieve(
     candidate_pool: int = 20,
     use_reranker: bool = True,
     trust_gate: bool = True,
+    scope: str | None = None,
 ) -> list[RetrievedChunk]:
     """Vector top-`candidate_pool`, optional rerank, then the trust gate.
 
@@ -144,7 +182,7 @@ def retrieve(
     laptop-policy flip. The default restores vector order when the best
     logit is below `RERANK_TRUST`.
     """
-    candidates = vector_search(query, top_k=candidate_pool)
+    candidates = vector_search(query, top_k=candidate_pool, scope=scope)
     if not use_reranker:
         return candidates[:top_k]
     ranked = rerank(query, candidates)

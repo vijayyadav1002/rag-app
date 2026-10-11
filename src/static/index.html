@@ -49,13 +49,15 @@
 
   <div class="workspace">
     <aside id="threads-aside">
+      <input id="thread-filter" class="thread-filter" type="search" placeholder="Filter conversations" aria-label="Filter conversations" />
       <div id="current-thread"></div>
       <div id="thread-list"></div>
     </aside>
     <div class="ask-main">
       <div id="thread-scroll">
         <div class="thread-inner">
-          <p class="lede" id="empty-ask">Answers come only from company documents. A follow-up keeps this conversation. New chat starts another one.</p>
+          <p class="lede" id="empty-ask">Answers use only the mounted documents. A follow-up keeps this conversation. New chat starts another one.</p>
+          <p id="vault-line" class="vault-line">Loading the library…</p>
           <p id="index-note" class="index-note" hidden></p>
           <div id="thread"></div>
         </div>
@@ -65,6 +67,11 @@
           <textarea id="question" rows="2" autocomplete="off" aria-label="Question"
                     placeholder="How many PTO days do I get per year?"></textarea>
           <div class="ask-actions">
+            <label class="scope-label" for="scope">Search in
+              <select id="scope">
+                <option value="">All documents</option>
+              </select>
+            </label>
             <p id="status" class="idle">Ready</p>
             <span id="conn">disconnected</span>
             <span class="send-hint">Enter to send, Shift+Enter for a new line</span>
@@ -82,7 +89,7 @@
       <div class="lock-brand">
         <div class="mark" aria-hidden="true">N</div>
         <h1>Ask Northwind <span class="vault-tag">Internal vault</span></h1>
-        <p>Restricted access — Northwind internal systems</p>
+        <p>One password. Answers stay inside the mounted documents.</p>
       </div>
       <form id="lock-form" method="post" action="/api/session">
         <div class="lock-label">
@@ -112,6 +119,7 @@
       </header>
       <div id="preview-body" class="preview-body"></div>
       <footer>
+        <button type="button" id="preview-ask">Ask about this file</button>
         <a id="preview-library" href="/library">Open in Library</a>
       </footer>
     </div>
@@ -124,6 +132,7 @@
         <button type="button" class="ghost" id="threads-close">Close</button>
       </header>
       <div id="thread-panel-mobile">
+        <input id="thread-filter-mobile" class="thread-filter" type="search" placeholder="Filter conversations" aria-label="Filter conversations" />
         <div id="current-thread-mobile"></div>
         <div id="thread-list-mobile"></div>
       </div>
@@ -139,6 +148,11 @@
     const threadEl = document.getElementById("thread");
     const threadScroll = document.getElementById("thread-scroll");
     const emptyAsk = document.getElementById("empty-ask");
+    const vaultLine = document.getElementById("vault-line");
+    const scopeEl = document.getElementById("scope");
+    const threadFilter = document.getElementById("thread-filter");
+    const threadFilterMobile = document.getElementById("thread-filter-mobile");
+    const previewAsk = document.getElementById("preview-ask");
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
     const indexNote = document.getElementById("index-note");
@@ -341,13 +355,33 @@
       return turn && typeof turn.question === "string" && typeof turn.answer === "string" && turn.answer.trim();
     }
 
+    let threadQuery = "";
+    let pinnedFile = "";
+    let vaultHasPto = true;
+    let previewName = "";
+
+    function snapshotChunk(chunk) {
+      if (!chunk || typeof chunk !== "object") return null;
+      return {
+        n: chunk.n,
+        source_file: typeof chunk.source_file === "string" ? chunk.source_file : "",
+        heading: typeof chunk.heading === "string" ? chunk.heading : "",
+        preview: typeof chunk.preview === "string" ? chunk.preview : "",
+        text: typeof chunk.text === "string" ? chunk.text : "",
+        expanded: Boolean(chunk.expanded),
+        rerank_score: typeof chunk.rerank_score === "number" ? chunk.rerank_score : null,
+      };
+    }
+
     function snapshotTurn(turn) {
       return {
         question: turn.question,
         answer: turn.answer,
         ranking: turn.ranking || "vector",
         query: turn.query || "",
-        chunks: Array.isArray(turn.chunks) ? turn.chunks : [],
+        scope: typeof turn.scope === "string" ? turn.scope : "",
+        wrong: Boolean(turn.wrong),
+        chunks: Array.isArray(turn.chunks) ? turn.chunks.map(snapshotChunk).filter(Boolean) : [],
       };
     }
 
@@ -405,6 +439,7 @@
             ).map((item) => ({
               id: item.id,
               title: typeof item.title === "string" ? item.title : "",
+              renamed: item.renamed === true,
               updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : 0,
               turns: item.turns.filter(validTurn).map(snapshotTurn),
             }));
@@ -444,6 +479,22 @@
       meta.className = "current-meta";
       meta.textContent = threadMeta(thread);
       card.append(title, meta);
+      if (thread) {
+        const actions = document.createElement("div");
+        actions.className = "current-actions";
+        const rename = document.createElement("button");
+        rename.type = "button";
+        rename.className = "ghost";
+        rename.textContent = "Rename";
+        rename.addEventListener("click", () => startRename(card, thread));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "ghost";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", removeCurrent);
+        actions.append(rename, remove);
+        card.append(actions);
+      }
       currentHost.append(currentLabel, card);
 
       listHost.replaceChildren();
@@ -451,13 +502,19 @@
       recentLabel.className = "side-label";
       recentLabel.textContent = "Recent conversations";
       listHost.append(recentLabel);
+      const needle = threadQuery.trim().toLowerCase();
       const recent = store.threads
         .filter((item) => item.id !== store.activeId && item.turns.length)
+        .filter((item) => {
+          if (!needle) return true;
+          if ((item.title || "").toLowerCase().includes(needle)) return true;
+          return item.turns.some((turn) => (turn.question || "").toLowerCase().includes(needle));
+        })
         .sort((a, b) => b.updatedAt - a.updatedAt);
       if (!recent.length) {
         const empty = document.createElement("p");
         empty.className = "side-empty";
-        empty.textContent = "No earlier conversations.";
+        empty.textContent = needle ? "No matching conversations." : "No earlier conversations.";
         listHost.append(empty);
         return;
       }
@@ -493,7 +550,7 @@
       const thread = ensureActive();
       thread.turns = committed.map(snapshotTurn);
       if (thread.turns.length) {
-        thread.title = thread.turns[0].question;
+        if (!thread.renamed) thread.title = thread.turns[0].question;
         thread.updatedAt = Date.now();
       }
       saveStore();
@@ -502,7 +559,7 @@
 
     function noteQuestion(question) {
       const thread = ensureActive();
-      if (!thread.turns.length) thread.title = question;
+      if (!thread.turns.length && !thread.renamed) thread.title = question;
       thread.updatedAt = Date.now();
       saveStore();
       renderThreads();
@@ -545,6 +602,67 @@
       store.threads = store.threads.filter((item) => item.id !== id);
       saveStore();
       renderThreads();
+    }
+
+    function startRename(card, thread) {
+      const title = card.querySelector(".current-title");
+      if (!title || !thread) return;
+      const field = document.createElement("input");
+      field.type = "text";
+      field.className = "thread-rename";
+      field.maxLength = 120;
+      field.value = thread.title || (thread.turns[0] && thread.turns[0].question) || "";
+      field.setAttribute("aria-label", "Conversation name");
+      title.replaceWith(field);
+      field.focus();
+      field.select();
+      let done = false;
+      const finish = (save) => {
+        if (done) return;
+        done = true;
+        if (save) {
+          const next = field.value.trim().slice(0, 120);
+          if (next) {
+            thread.title = next;
+            thread.renamed = true;
+          }
+        }
+        saveStore();
+        renderThreads();
+      };
+      field.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); finish(true); }
+        if (event.key === "Escape") { event.preventDefault(); finish(false); }
+      });
+      field.addEventListener("blur", () => finish(true));
+    }
+
+    function removeCurrent() {
+      const thread = activeThread();
+      if (!thread) return;
+      if (!confirm("Remove this conversation from this browser?")) return;
+      const wasAnswering = answering;
+      epoch += 1;
+      active = null;
+      store.threads = store.threads.filter((item) => item.id !== thread.id && item.turns.length);
+      const fresh = { id: newId(), title: "", renamed: false, updatedAt: Date.now(), turns: [] };
+      store.threads.unshift(fresh);
+      store.activeId = fresh.id;
+      committed = [];
+      threadEl.replaceChildren();
+      saveStore();
+      renderThreads();
+      input.value = "";
+      syncEmpty();
+      syncComposer();
+      closeThreads();
+      if (wasAnswering && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ cancel: true }));
+      } else {
+        setBusy(false);
+        if (!rebuilding) setStatus("Ready", "idle");
+      }
+      input.focus();
     }
 
     function bindLightDismiss(dialog) {
@@ -592,10 +710,11 @@
       const locked = rebuilding || answering;
       input.disabled = locked;
       askBtn.disabled = locked;
+      scopeEl.disabled = locked;
       newChatBtn.disabled = threadEl.childElementCount === 0 && !answering;
       input.placeholder = committed.length
         ? "Ask a follow-up…"
-        : "How many PTO days do I get per year?";
+        : (vaultHasPto ? "How many PTO days do I get per year?" : "Ask a question about these documents");
       syncEmpty();
     }
 
@@ -683,7 +802,7 @@
       });
       const bot = document.createElement("p");
       bot.className = "who";
-      bot.textContent = "Northwind knowledge synthesis";
+      bot.textContent = "From the mounted documents";
       const answer = document.createElement("div");
       answer.className = "answer";
       answer.addEventListener("click", (event) => {
@@ -709,25 +828,131 @@
         }
         setTimeout(() => { copy.textContent = "Copy markdown"; }, 1200);
       });
-      tools.append(copy);
-      article.append(asked, details, bot, answer, tools);
-      threadEl.append(article);
-      syncEmpty();
-      if (!options || options.scroll !== false) {
-        article.scrollIntoView({ block: "end" });
-      }
-      return {
+      const view = {
         epoch,
         question,
         query: "",
         ranking: "",
+        scope: "",
+        wrong: false,
+        record: null,
         chunks: [],
         md: "",
         details,
         summary,
         excerptsEl: excerpts,
         answerEl: answer,
+        article,
       };
+      const wrongBtn = document.createElement("button");
+      wrongBtn.type = "button";
+      wrongBtn.className = "ghost";
+      wrongBtn.textContent = "Mark wrong";
+      wrongBtn.addEventListener("click", () => {
+        view.wrong = !view.wrong;
+        if (view.record) {
+          view.record.wrong = view.wrong;
+          persist();
+        }
+        paintWrong(view);
+      });
+      view.wrongBtn = wrongBtn;
+      tools.append(copy, wrongBtn);
+      article.append(asked, details, bot, answer, tools);
+      threadEl.append(article);
+      syncEmpty();
+      if (!options || options.scroll !== false) {
+        article.scrollIntoView({ block: "end" });
+      }
+      return view;
+    }
+
+    function paintWrong(view) {
+      view.article.classList.toggle("turn-wrong", Boolean(view.wrong));
+      if (view.wrongBtn) view.wrongBtn.textContent = view.wrong ? "Marked wrong" : "Mark wrong";
+    }
+
+    function claimRanges(answer, n, excerpt) {
+      const pattern = new RegExp("\\[" + n + "\\]");
+      if (!excerpt || !pattern.test(answer || "")) return { cited: false, ranges: [] };
+      const cited = String(answer).split(/(?<=[.!?\n])\s+/).filter((part) => pattern.test(part));
+      const hay = excerpt.toLowerCase();
+      const ranges = [];
+      for (const part of cited) {
+        const words = part
+          .replace(/\[[0-9]+\]/g, " ")
+          .replace(/[`*_#>[\]()]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .split(" ")
+          .filter((word) => word.length > 1);
+        let found = null;
+        for (let len = Math.min(words.length, 18); len >= 4 && !found; len -= 1) {
+          for (let i = 0; i + len <= words.length; i += 1) {
+            const phrase = words.slice(i, i + len).join(" ").toLowerCase();
+            if (phrase.length < 16) continue;
+            const at = hay.indexOf(phrase);
+            if (at >= 0) {
+              found = { at, length: phrase.length };
+              break;
+            }
+          }
+        }
+        if (found) ranges.push(found);
+      }
+      return { cited: cited.length > 0, ranges };
+    }
+
+    function paintExcerpt(node, text, ranges) {
+      node.replaceChildren();
+      const merged = ranges.slice().sort((a, b) => a.at - b.at).reduce((out, range) => {
+        const last = out[out.length - 1];
+        if (last && range.at <= last.at + last.length) {
+          last.length = Math.max(last.length, range.at + range.length - last.at);
+          return out;
+        }
+        out.push({ at: range.at, length: range.length });
+        return out;
+      }, []);
+      let cursor = 0;
+      for (const range of merged) {
+        if (range.at > cursor) node.append(document.createTextNode(text.slice(cursor, range.at)));
+        const mark = document.createElement("mark");
+        mark.className = "support";
+        mark.textContent = text.slice(range.at, range.at + range.length);
+        node.append(mark);
+        cursor = range.at + range.length;
+      }
+      if (cursor < text.length) node.append(document.createTextNode(text.slice(cursor)));
+    }
+
+    function refreshSupport(turn) {
+      const answer = turn.md || "";
+      for (const card of turn.excerptsEl.querySelectorAll(".chunk")) {
+        const chunk = (turn.chunks || []).find((item) => item.n === Number(card.dataset.n));
+        const body = card.querySelector(".preview");
+        if (!chunk || !body) continue;
+        const text = chunk.text || chunk.preview || "";
+        if (!chunk.text) {
+          body.textContent = text;
+          const stale = card.querySelector(".support-miss");
+          if (stale) stale.remove();
+          continue;
+        }
+        const support = claimRanges(answer, chunk.n, text);
+        paintExcerpt(body, text, support.ranges);
+        let miss = card.querySelector(".support-miss");
+        if (support.cited && !support.ranges.length) {
+          if (!miss) {
+            miss = document.createElement("p");
+            miss.className = "support-miss";
+            card.append(miss);
+          }
+          miss.textContent = "The sentence citing this excerpt is not in the text.";
+        } else if (miss) {
+          miss.remove();
+        }
+      }
     }
 
     function showSources(turn, chunks, ranking) {
@@ -736,6 +961,12 @@
       fillSummary(turn.summary, ranking, chunks.length, turn.details.open);
       const el = turn.excerptsEl;
       el.replaceChildren();
+      if (turn.scope) {
+        const scopeLine = document.createElement("p");
+        scopeLine.className = "search-as";
+        scopeLine.textContent = "Searched in " + turn.scope;
+        el.append(scopeLine);
+      }
       if (turn.query && turn.query !== turn.question) {
         const line = document.createElement("p");
         line.className = "search-as";
@@ -784,10 +1015,12 @@
         card.append(meta, preview);
         el.append(card);
       }
+      refreshSupport(turn);
     }
 
     async function openPreview(name) {
       if (!name) return;
+      previewName = name;
       previewTitle.textContent = name;
       previewMeta.textContent = "Loading…";
       previewBody.replaceChildren();
@@ -821,13 +1054,17 @@
 
     function commitActive() {
       if (!active || !active.md.trim()) return;
-      committed.push({
+      const record = {
         question: active.question,
         answer: active.md,
         ranking: active.ranking || "vector",
         query: active.query || "",
+        scope: active.scope || "",
+        wrong: Boolean(active.wrong),
         chunks: active.chunks || [],
-      });
+      };
+      committed.push(record);
+      active.record = record;
       active = null;
       persist();
       syncComposer();
@@ -844,11 +1081,15 @@
 
     function renderSaved(turn) {
       const view = appendTurn(turn.question, { scroll: false });
+      view.record = turn;
+      view.wrong = Boolean(turn.wrong);
+      view.scope = turn.scope || "";
       view.query = turn.query || "";
       view.md = turn.answer;
       view.answerEl.dataset.md = turn.answer;
       view.answerEl.innerHTML = renderMarkdown(turn.answer);
       showSources(view, Array.isArray(turn.chunks) ? turn.chunks : [], turn.ranking || "vector");
+      paintWrong(view);
       view.details.open = false;
     }
 
@@ -941,9 +1182,66 @@
       return { stale: false, ok };
     }
 
+    function topFolder(name) {
+      const parts = String(name || "").split("/");
+      return parts.length > 1 ? parts[0] : "";
+    }
+
+    function fillScope(folders) {
+      const current = scopeEl.value;
+      scopeEl.replaceChildren();
+      const all = document.createElement("option");
+      all.value = "";
+      all.textContent = "All documents";
+      scopeEl.append(all);
+      for (const name of folders) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        scopeEl.append(opt);
+      }
+      if (pinnedFile) {
+        const opt = document.createElement("option");
+        opt.value = pinnedFile;
+        opt.textContent = pinnedFile;
+        scopeEl.append(opt);
+      }
+      const values = [...scopeEl.options].map((opt) => opt.value);
+      scopeEl.value = values.includes(current) ? current : "";
+    }
+
+    async function loadVault() {
+      try {
+        const res = await fetch("/api/docs");
+        if (!res.ok) return;
+        const body = await res.json().catch(() => ({}));
+        const docs = Array.isArray(body.docs) ? body.docs : [];
+        const files = docs.filter((doc) => doc.state !== "missing_on_disk");
+        vaultHasPto = files.some((doc) => doc.name === "pto_policy.md" || String(doc.name).endsWith("/pto_policy.md"));
+        const folders = [...new Set(files.map((doc) => topFolder(doc.name)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+        const chunks = typeof body.num_chunks === "number" ? body.num_chunks + " chunks" : "index not built";
+        vaultLine.textContent = files.length + (files.length === 1 ? " file · " : " files · ") + chunks + (folders.length ? " · " + folders.join(", ") : "");
+        fillScope(folders);
+        syncComposer();
+      } catch (err) {
+        vaultLine.textContent = "The library could not be loaded.";
+      }
+    }
+
+    function askAboutFile() {
+      if (!previewName) return;
+      pinnedFile = previewName;
+      const folders = [...scopeEl.options].map((opt) => opt.value).filter((value) => value && !value.endsWith(".md"));
+      fillScope(folders);
+      scopeEl.value = previewName;
+      if (previewDialog.open) previewDialog.close();
+      input.focus();
+    }
+
     function startAsk() {
       connect();
       checkRebuildOnLoad();
+      loadVault();
       if (!rebuilding && !answering) setStatus("Ready", "idle");
       input.focus();
     }
@@ -1045,6 +1343,7 @@
         turn.md += event.text;
         turn.answerEl.dataset.md = turn.md;
         turn.answerEl.innerHTML = renderMarkdown(turn.md);
+        refreshSupport(turn);
         stickToAnswer(turn.answerEl);
         return;
       }
@@ -1094,12 +1393,14 @@
         return;
       }
       const history = historyPayload();
+      const scope = scopeEl.value;
       active = appendTurn(question);
+      active.scope = scope;
       noteQuestion(question);
       input.value = "";
       setStatus("Sending…");
       setBusy(true);
-      ws.send(JSON.stringify({ question, history }));
+      ws.send(JSON.stringify({ question, history, scope }));
     }
 
     function newChat() {
@@ -1149,6 +1450,17 @@
     threadsToggle.addEventListener("click", () => threadsDialog.showModal());
     threadsClose.addEventListener("click", () => threadsDialog.close());
     previewClose.addEventListener("click", () => previewDialog.close());
+    previewAsk.addEventListener("click", askAboutFile);
+    threadFilter.addEventListener("input", () => {
+      threadQuery = threadFilter.value;
+      threadFilterMobile.value = threadQuery;
+      renderThreads();
+    });
+    threadFilterMobile.addEventListener("input", () => {
+      threadQuery = threadFilterMobile.value;
+      threadFilter.value = threadQuery;
+      renderThreads();
+    });
     bindLightDismiss(previewDialog);
     bindLightDismiss(threadsDialog);
     lockForm.addEventListener("submit", async (event) => {

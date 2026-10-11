@@ -50,6 +50,8 @@ class Proposal:
     base_mtime_ns: int | None
     updated_at: str
     format_error: str | None = None
+    dest: str | None = None
+    base_digest: str | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -77,22 +79,35 @@ def _proposal_path(target: str, review_dir: Path | None = None) -> Path:
 def _proposal_from(data: dict) -> Proposal:
     if not isinstance(data, dict):
         raise ValueError("proposal")
-    if data.get("op") not in ("upsert", "delete"):
+    op = str(data.get("op"))
+    if op not in ("upsert", "delete", "rename"):
         raise ValueError("op")
     if data.get("origin") not in ("ai", "manual"):
         raise ValueError("origin")
     ns = data.get("base_mtime_ns")
     if ns is not None:
         ns = int(ns)
+    dest = data.get("dest")
+    if op == "rename":
+        if not isinstance(dest, str):
+            raise ValueError("dest")
+        dest = safe_md_relpath(dest)
+    else:
+        dest = None
+    digest = data.get("base_digest")
+    if not isinstance(digest, str) or len(digest) != 64:
+        digest = None
     return Proposal(
         target=safe_md_relpath(str(data["target"])),
-        op=str(data["op"]),
+        op=op,
         body=str(data.get("body") or ""),
         origin=str(data["origin"]),
         base_mtime=data.get("base_mtime"),
         base_mtime_ns=ns,
         updated_at=str(data.get("updated_at") or ""),
         format_error=data.get("format_error"),
+        dest=dest,
+        base_digest=digest,
     )
 
 
@@ -138,6 +153,30 @@ def get_proposal(target: str, review_dir: Path | None = None) -> Proposal:
         raise ReviewError("That proposal could not be read.") from exc
 
 
+def _base(path: Path) -> tuple[str | None, int | None, str | None]:
+    iso, ns = file_mtime(path)
+    if not path.is_file():
+        return iso, ns, None
+    return iso, ns, library.file_digest(path)
+
+
+def _same_base(path: Path, proposal: Proposal) -> bool:
+    """True when the live file is still the one this draft was staged from.
+
+    A stored digest ignores a timestamp-only touch. Older proposals that
+    have no digest keep the mtime check.
+    """
+    if not path.is_file():
+        return proposal.base_mtime_ns is None and not proposal.base_digest
+    if proposal.base_digest:
+        try:
+            return library.file_digest(path) == proposal.base_digest
+        except OSError:
+            return False
+    _iso, ns = file_mtime(path)
+    return ns == proposal.base_mtime_ns
+
+
 def _formatted(text: str) -> tuple[str, str, str | None]:
     try:
         return format_md.format_markdown(text), "ai", None
@@ -168,7 +207,7 @@ def stage_upload(
     body, origin, format_error = _formatted(text)
     docs = docs_dir or library.DOCS_DIR
     path, rel = live_path(name, docs)
-    iso, ns = file_mtime(path)
+    iso, ns, digest = _base(path)
     proposal = Proposal(
         target=rel,
         op="upsert",
@@ -178,6 +217,7 @@ def stage_upload(
         base_mtime_ns=ns,
         updated_at=_now(),
         format_error=format_error,
+        base_digest=digest,
     )
     _write(proposal, review_dir)
     return proposal
@@ -192,7 +232,7 @@ def stage_delete(
     path, rel = live_path(name, docs)
     if not path.is_file():
         raise FileNotFoundError(rel)
-    iso, ns = file_mtime(path)
+    iso, ns, digest = _base(path)
     proposal = Proposal(
         target=rel,
         op="delete",
@@ -202,6 +242,7 @@ def stage_delete(
         base_mtime_ns=ns,
         updated_at=_now(),
         format_error=None,
+        base_digest=digest,
     )
     _write(proposal, review_dir)
     return proposal
@@ -224,7 +265,7 @@ def save_draft(
         raise ReviewError("A delete is pending for this file.")
     docs = docs_dir or library.DOCS_DIR
     path, _rel = live_path(rel, docs)
-    iso, ns = file_mtime(path)
+    iso, ns, digest = _base(path)
     proposal = Proposal(
         target=rel,
         op="upsert",
@@ -234,6 +275,44 @@ def save_draft(
         base_mtime_ns=ns,
         updated_at=_now(),
         format_error=None,
+        base_digest=digest,
+    )
+    _write(proposal, review_dir)
+    return proposal
+
+
+def stage_rename(
+    name: str,
+    dest: str,
+    docs_dir: Path | None = None,
+    review_dir: Path | None = None,
+) -> Proposal:
+    """Stage a move. Approve writes the new path and removes the old one."""
+    docs = docs_dir or library.DOCS_DIR
+    path, rel = live_path(name, docs)
+    if not path.is_file():
+        raise FileNotFoundError(rel)
+    dest_rel = safe_md_relpath(dest)
+    if dest_rel == rel:
+        raise ReviewError("Choose a different path.")
+    dest_path, _dest = live_path(dest_rel, docs)
+    if dest_path.exists():
+        raise ReviewError("A file already exists at that path.")
+    body = path.read_text(encoding="utf-8")
+    if len(body.encode("utf-8")) > MAX_UPLOAD_BYTES:
+        raise UploadError("File larger than 1 MB.")
+    iso, ns, digest = _base(path)
+    proposal = Proposal(
+        target=rel,
+        op="rename",
+        body=body,
+        origin="manual",
+        base_mtime=iso,
+        base_mtime_ns=ns,
+        updated_at=_now(),
+        format_error=None,
+        dest=dest_rel,
+        base_digest=digest,
     )
     _write(proposal, review_dir)
     return proposal
@@ -241,8 +320,8 @@ def save_draft(
 
 def format_proposal(name: str, review_dir: Path | None = None) -> Proposal:
     proposal = get_proposal(name, review_dir)
-    if proposal.op == "delete":
-        raise ReviewError("Delete proposals have no body to format.")
+    if proposal.op != "upsert":
+        raise ReviewError("Only a draft can be formatted.")
     proposal.body = format_md.format_markdown(proposal.body)
     proposal.origin = "ai"
     proposal.format_error = None
@@ -259,19 +338,34 @@ def approve(
     proposal = get_proposal(name, review_dir)
     docs = docs_dir or library.DOCS_DIR
     path, rel = live_path(proposal.target, docs)
-    _iso, ns = file_mtime(path)
+    if proposal.op == "rename":
+        if not proposal.dest:
+            raise ReviewError("Choose a destination.")
+        dest_path, dest_rel = live_path(proposal.dest, docs)
+        if dest_rel == rel:
+            raise ReviewError("Choose a different path.")
+        if not path.is_file():
+            raise FileNotFoundError(rel)
+        if not _same_base(path, proposal):
+            raise ConflictError("The live file changed since this draft was staged.")
+        if dest_path.exists():
+            raise ReviewError("A file already exists at that path.")
+        write_doc(dest_rel, proposal.body.encode("utf-8"), docs)
+        delete_doc(rel, docs)
+        _drop(proposal.target, review_dir)
+        return
     if proposal.op == "delete":
         if not path.is_file():
             _drop(proposal.target, review_dir)
             return
-        if ns != proposal.base_mtime_ns:
+        if not _same_base(path, proposal):
             raise ConflictError("The live file changed since this draft was staged.")
         delete_doc(rel, docs)
         _drop(proposal.target, review_dir)
         return
     if not proposal.body.strip():
         raise ReviewError("Empty draft.")
-    if ns != proposal.base_mtime_ns:
+    if not _same_base(path, proposal):
         raise ConflictError("The live file changed since this draft was staged.")
     write_doc(rel, proposal.body.encode("utf-8"), docs)
     _drop(proposal.target, review_dir)

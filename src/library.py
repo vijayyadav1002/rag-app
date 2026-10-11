@@ -5,11 +5,13 @@ root. Delete and list use posix-relative paths so nested files already on
 disk can be shown and removed. The chunker only reads markdown. Upload and
 delete only touch files on disk. They do not rebuild FAISS — search still
 reads index/ until someone calls build() + reload(). List marks an indexed
-file `changed` when its mtime is newer than config.json `indexed_at`, so
-the pages can say the index is behind without rebuilding it.
+file `changed` when its bytes differ from the digest stored at index
+time. An older index with no digests still falls back to mtime, because a
+cloud sync can touch a timestamp without changing the text.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import pickle
 from datetime import datetime, timezone
@@ -59,20 +61,55 @@ def safe_md_relpath(name: str) -> str:
     return path.as_posix()
 
 
+def file_digest(path: Path) -> str:
+    """SHA-256 of the file bytes. Used to tell an edit from a timestamp touch."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def clean_scope(value: object) -> str:
+    """Folder or markdown path a question is allowed to search.
+
+    A file scope ends in `.md`. Anything else is a folder prefix. Hidden
+    parts and traversal are rejected so a socket payload cannot escape the corpus.
+    """
+    if not isinstance(value, str):
+        raise UnsafeNameError("Choose a folder or a file.")
+    raw = value.strip()
+    if not raw or "\x00" in raw or "\\" in raw:
+        raise UnsafeNameError("Choose a folder or a file.")
+    path = Path(raw)
+    if path.is_absolute() or path.anchor or not path.parts:
+        raise UnsafeNameError("Choose a folder or a file.")
+    if any(part in (".", "..") or part.startswith(".") for part in path.parts):
+        raise UnsafeNameError("Choose a folder or a file.")
+    return path.as_posix()
+
+
 def index_meta(index_dir: Path | None = None) -> dict:
     index_dir = index_dir or INDEX_DIR
     path = index_dir / "config.json"
     if not path.exists():
-        return {"indexed_at": None, "num_chunks": None, "files": []}
+        return {"indexed_at": None, "num_chunks": None, "files": [], "digests": {}}
     with open(path) as f:
         cfg = json.load(f)
     files = cfg.get("files") or []
     if not isinstance(files, list):
         files = []
+    raw = cfg.get("digests") or {}
+    digests: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, digest in raw.items():
+            if isinstance(key, str) and isinstance(digest, str) and len(digest) == 64:
+                digests[key] = digest
     return {
         "indexed_at": cfg.get("indexed_at"),
         "num_chunks": cfg.get("num_chunks"),
         "files": [str(x) for x in files],
+        "digests": digests,
     }
 
 
@@ -135,6 +172,7 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
     counts = chunk_counts(index_dir)
     indexed = set(meta["files"])
     indexed_at = _parse_time(meta.get("indexed_at"))
+    digests = meta.get("digests") or {}
     disk = {}
     for path, rel in markdown_paths(docs_dir):
         st = path.stat()
@@ -142,21 +180,27 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
             "name": rel,
             "size": st.st_size,
             "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+            "path": path,
         }
     names = sorted(set(disk) | indexed)
     rows = []
     for name in names:
         if name in disk:
             state = "indexed" if name in indexed else "not_indexed"
-            mtime = _parse_time(disk[name]["mtime"])
-            if (
-                state == "indexed"
-                and indexed_at is not None
-                and mtime is not None
-                and mtime > indexed_at
-            ):
-                state = "changed"
-            rows.append({**disk[name], "state": state, "chunk_count": _chunk_count(counts, name)})
+            recorded = digests.get(name)
+            if state == "indexed" and recorded:
+                try:
+                    current = file_digest(disk[name]["path"])
+                except OSError:
+                    current = ""
+                if current != recorded:
+                    state = "changed"
+            elif state == "indexed":
+                mtime = _parse_time(disk[name]["mtime"])
+                if indexed_at is not None and mtime is not None and mtime > indexed_at:
+                    state = "changed"
+            row = {key: value for key, value in disk[name].items() if key != "path"}
+            rows.append({**row, "state": state, "chunk_count": _chunk_count(counts, name)})
         else:
             rows.append(
                 {
@@ -231,6 +275,31 @@ def write_doc(name: str, data: bytes, docs_dir: Path | None = None) -> str:
     tmp.write_bytes(data)
     tmp.replace(path)
     return rel
+
+
+def search_phrases(
+    query: str,
+    docs_dir: Path | None = None,
+    limit: int = 30,
+) -> list[dict]:
+    """Exact line matches. This is the search between a filename filter and Ask."""
+    needle = (query or "").strip().lower()
+    if len(needle) < 2:
+        return []
+    docs_dir = docs_dir or DOCS_DIR
+    hits: list[dict] = []
+    for path, rel in markdown_paths(docs_dir):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            if needle not in line.lower():
+                continue
+            hits.append({"name": rel, "line": number, "text": line.strip()[:240]})
+            if len(hits) >= limit:
+                return hits
+    return hits
 
 
 def delete_doc(name: str, docs_dir: Path | None = None) -> None:

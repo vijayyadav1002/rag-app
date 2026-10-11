@@ -67,6 +67,7 @@
       <p id="review-status"></p>
       <div id="review-list"></div>
       <div id="editor" hidden>
+        <pre id="draft-diff" class="diff"></pre>
         <textarea id="draft" spellcheck="false" aria-label="Draft markdown"></textarea>
         <div class="lib-actions">
           <button type="button" id="format-draft">Format</button>
@@ -81,6 +82,8 @@
     <section class="panel" id="library">
       <search class="lib-toolbar">
         <input id="doc-filter" type="search" placeholder="Filter documents by path" aria-label="Filter documents by path" />
+        <input id="phrase-search" type="search" placeholder="Find a phrase" aria-label="Find a phrase in the documents" />
+        <div id="phrase-hits"></div>
         <div class="pills" id="folder-pills"></div>
       </search>
       <div id="doc-list"></div>
@@ -91,8 +94,18 @@
       <h2>Add markdown</h2>
       <div class="drop-zone" id="drop-zone">
         <p>Drop Markdown files here, or <button type="button" id="browse-files">browse</button></p>
-        <p class="fine">MARKDOWN ONLY · 1 MB EACH · UP TO 20 FILES</p>
+        <p class="fine">MARKDOWN ONLY · 1 MB EACH · UP TO 20 FILES · UPLOAD LANDS AT THE CORPUS ROOT</p>
       </div>
+      <form id="new-note-form" class="new-note">
+        <label>Folder
+          <input id="new-folder" type="text" autocomplete="off" placeholder="Interview" />
+        </label>
+        <label>File name
+          <input id="new-name" type="text" autocomplete="off" placeholder="note.md" required />
+        </label>
+        <button type="submit" id="new-note">New note</button>
+      </form>
+      <p id="new-note-status" class="doc-meta"></p>
     </section>
   </main>
 
@@ -101,7 +114,7 @@
       <div class="lock-brand">
         <div class="mark" aria-hidden="true">N</div>
         <h1>Ask Northwind <span class="vault-tag">Internal vault</span></h1>
-        <p>Restricted access — Northwind internal systems</p>
+        <p>One password. Answers stay inside the mounted documents.</p>
       </div>
       <form id="lock-form" method="post" action="/api/session">
         <div class="lock-label">
@@ -119,6 +132,21 @@
       <p id="lock-status"></p>
     </div>
   </section>
+
+  <dialog id="rename-dialog" closedby="any" aria-labelledby="rename-title">
+    <form id="rename-form" class="sheet">
+      <header>
+        <h2 id="rename-title">Move file</h2>
+        <button type="button" class="ghost" id="rename-cancel">Cancel</button>
+      </header>
+      <p id="rename-from" class="doc-meta"></p>
+      <label class="rename-label" for="rename-dest">New path</label>
+      <input id="rename-dest" type="text" autocomplete="off" required />
+      <p class="fine">Approve the review item to move it. Search updates after Re-index.</p>
+      <button type="submit">Stage move</button>
+      <p id="rename-status"></p>
+    </form>
+  </dialog>
 
   <dialog id="preview" closedby="any" aria-labelledby="preview-title">
     <div class="sheet">
@@ -140,6 +168,8 @@
     const libStatus = document.getElementById("lib-status");
     const docList = document.getElementById("doc-list");
     const docFilter = document.getElementById("doc-filter");
+    const phraseSearch = document.getElementById("phrase-search");
+    const phraseHits = document.getElementById("phrase-hits");
     const folderPills = document.getElementById("folder-pills");
     const docPager = document.getElementById("doc-pager");
     const fileCountEl = document.getElementById("file-count");
@@ -154,6 +184,18 @@
     const reviewList = document.getElementById("review-list");
     const editor = document.getElementById("editor");
     const draft = document.getElementById("draft");
+    const draftDiff = document.getElementById("draft-diff");
+    const newNoteForm = document.getElementById("new-note-form");
+    const newFolder = document.getElementById("new-folder");
+    const newName = document.getElementById("new-name");
+    const newNoteBtn = document.getElementById("new-note");
+    const newNoteStatus = document.getElementById("new-note-status");
+    const renameDialog = document.getElementById("rename-dialog");
+    const renameForm = document.getElementById("rename-form");
+    const renameFromEl = document.getElementById("rename-from");
+    const renameDest = document.getElementById("rename-dest");
+    const renameCancel = document.getElementById("rename-cancel");
+    const renameStatus = document.getElementById("rename-status");
     const editorStatus = document.getElementById("editor-status");
     const formatBtn = document.getElementById("format-draft");
     const saveBtn = document.getElementById("save-draft");
@@ -189,6 +231,10 @@
     let rebuilding = false;
     let proposals = [];
     let openTarget = null;
+    let liveBody = "";
+    let reviewGen = 0;
+    let renameFrom = "";
+    let phraseTimer = null;
     let sessionGen = 0;
     let lastDocs = [];
     let lastChunkTotal = null;
@@ -445,8 +491,14 @@
           del.textContent = "Delete";
           del.disabled = rebuilding;
           del.addEventListener("click", () => removeDoc(doc.name));
+          const move = document.createElement("button");
+          move.type = "button";
+          move.className = "ghost mutate";
+          move.textContent = "Move";
+          move.disabled = rebuilding;
+          move.addEventListener("click", () => openRename(doc.name));
           actions.append(view);
-          if (doc.state !== "missing_on_disk") actions.append(edit, del);
+          if (doc.state !== "missing_on_disk") actions.append(edit, move, del);
           row.append(main, actions);
           docList.append(row);
         }
@@ -549,6 +601,7 @@
       saveBtn.disabled = locked;
       approveBtn.disabled = locked;
       reloadBtn.disabled = locked;
+      newNoteBtn.disabled = locked;
       docList.querySelectorAll("button.mutate").forEach((button) => { button.disabled = locked; });
       reviewList.querySelectorAll("button").forEach((button) => { button.disabled = locked; });
       reindexBtn.textContent = locked ? "Rebuilding…" : "Re-index";
@@ -661,7 +714,102 @@
       }
     }
 
+    function lineDiff(before, after) {
+      const a = String(before).split("\n");
+      const b = String(after).split("\n");
+      if (a.length > 500 || b.length > 500) return null;
+      const n = a.length;
+      const m = b.length;
+      const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+      for (let i = n - 1; i >= 0; i -= 1) {
+        for (let j = m - 1; j >= 0; j -= 1) {
+          dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      const rows = [];
+      let i = 0;
+      let j = 0;
+      while (i < n && j < m) {
+        if (a[i] === b[j]) {
+          rows.push({ kind: "same", text: a[i] });
+          i += 1;
+          j += 1;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+          rows.push({ kind: "del", text: a[i] });
+          i += 1;
+        } else {
+          rows.push({ kind: "add", text: b[j] });
+          j += 1;
+        }
+      }
+      while (i < n) rows.push({ kind: "del", text: a[i++] });
+      while (j < m) rows.push({ kind: "add", text: b[j++] });
+      if (rows.every((row) => row.kind === "same")) return [];
+      const kept = [];
+      rows.forEach((row, index) => {
+        if (row.kind !== "same") {
+          kept.push(row);
+          return;
+        }
+        const near = rows.slice(Math.max(0, index - 1), index + 2).some((item) => item.kind !== "same");
+        if (near) kept.push(row);
+        else if (!kept.length || kept[kept.length - 1].kind !== "skip") kept.push({ kind: "skip", text: "" });
+      });
+      return kept;
+    }
+
+    function paintDiff(host, before, after) {
+      host.replaceChildren();
+      const rows = lineDiff(before, after);
+      if (rows === null) {
+        host.textContent = "This draft is too long to diff here.";
+        return;
+      }
+      if (!rows.length) {
+        host.textContent = "No changes from the live file.";
+        return;
+      }
+      for (const row of rows) {
+        const line = document.createElement("div");
+        if (row.kind === "skip") {
+          line.className = "diff-skip";
+          line.textContent = "…";
+        } else {
+          line.className = row.kind === "add" ? "diff-add" : row.kind === "del" ? "diff-del" : "diff-same";
+          const mark = row.kind === "add" ? "+ " : row.kind === "del" ? "− " : "  ";
+          line.textContent = mark + row.text;
+        }
+        host.append(line);
+      }
+    }
+
+    async function queueDiff(row, item, gen) {
+      let live = "";
+      try {
+        const res = await fetch("/api/docs/" + encPath(item.target));
+        if (gen !== reviewGen) return;
+        if (res.ok) {
+          const body = await res.json().catch(() => ({}));
+          live = body.body || "";
+        }
+      } catch (err) {
+        if (gen !== reviewGen) return;
+      }
+      if (gen !== reviewGen || !row.isConnected) return;
+      const details = document.createElement("details");
+      details.className = "diff-wrap";
+      const summary = document.createElement("summary");
+      const changed = live !== (item.body || "");
+      summary.textContent = changed ? "Show changes" : "No text changes";
+      const pre = document.createElement("pre");
+      pre.className = "diff";
+      paintDiff(pre, live, item.body || "");
+      details.append(summary, pre);
+      row.append(details);
+    }
+
     function renderReview(items, unreadable) {
+      reviewGen += 1;
       proposals = items || [];
       reviewList.replaceChildren();
       if (unreadable) {
@@ -682,10 +830,10 @@
         const row = document.createElement("div");
         row.className = "row";
         const left = document.createElement("div");
-        left.textContent = item.target;
+        left.textContent = item.op === "rename" && item.dest ? item.target + " → " + item.dest : item.target;
         const op = document.createElement("span");
         op.className = "state";
-        op.textContent = item.op === "delete" ? "Delete" : "Update";
+        op.textContent = item.op === "delete" ? "Delete" : item.op === "rename" ? "Move" : "Update";
         const origin = document.createElement("span");
         origin.className = "state";
         origin.textContent = item.origin === "ai" ? "Formatted" : "Hand edit";
@@ -696,7 +844,7 @@
           failed.textContent = "Formatting failed";
           row.append(failed);
         }
-        if (item.op !== "delete") {
+        if (item.op === "upsert") {
           const edit = document.createElement("button");
           edit.type = "button";
           edit.className = "ghost";
@@ -717,18 +865,53 @@
         reject.disabled = rebuilding;
         reject.addEventListener("click", () => rejectProposal(item.target));
         row.append(approve, reject);
+        if (item.op === "rename") {
+          const note = document.createElement("p");
+          note.className = "doc-meta diff-wrap";
+          note.textContent = "Approve moves this file to " + (item.dest || "the new path") + ".";
+          row.append(note);
+        } else if (item.op === "delete") {
+          const note = document.createElement("p");
+          note.className = "doc-meta diff-wrap";
+          note.textContent = "Approve removes this file.";
+          row.append(note);
+        } else {
+          queueDiff(row, item, reviewGen);
+        }
         reviewList.append(row);
       }
     }
 
-    function openEditor(item) {
+    async function openEditor(item) {
       openTarget = item.target;
       draft.value = item.body || "";
       editor.hidden = false;
+      liveBody = "";
+      draftDiff.textContent = "Comparing with the live file…";
       editorStatus.textContent = item.format_error || "";
       editorStatus.className = item.format_error ? "err" : "";
       editor.scrollIntoView({ block: "nearest" });
       draft.focus();
+      try {
+        const res = await fetch("/api/docs/" + encPath(item.target));
+        if (openTarget !== item.target) return;
+        if (res.ok) {
+          const body = await res.json().catch(() => ({}));
+          liveBody = body.body || "";
+        }
+      } catch (err) {}
+      if (openTarget === item.target) paintDiff(draftDiff, liveBody, draft.value);
+    }
+
+    function openRename(name) {
+      renameFrom = name;
+      renameFromEl.textContent = name;
+      renameDest.value = name;
+      renameStatus.textContent = "";
+      renameStatus.className = "";
+      if (!renameDialog.open) renameDialog.showModal();
+      renameDest.focus();
+      renameDest.select();
     }
 
     function closeEditor() {
@@ -1085,6 +1268,122 @@
     });
     previewClose.addEventListener("click", () => previewDialog.close());
     bindLightDismiss(previewDialog);
+    bindLightDismiss(renameDialog);
+    draft.addEventListener("input", () => paintDiff(draftDiff, liveBody, draft.value));
+    phraseSearch.addEventListener("input", () => {
+      clearTimeout(phraseTimer);
+      const query = phraseSearch.value.trim();
+      if (query.length < 2) {
+        phraseHits.replaceChildren();
+        return;
+      }
+      phraseTimer = setTimeout(() => runPhrase(query), 300);
+    });
+    newNoteForm.addEventListener("submit", stageNewNote);
+    renameCancel.addEventListener("click", () => renameDialog.close());
+    renameForm.addEventListener("submit", stageMove);
+
+    async function runPhrase(query) {
+      try {
+        const res = await fetch("/api/docs?q=" + encodeURIComponent(query));
+        if (sessionEnded(res)) return;
+        const body = await res.json().catch(() => ({}));
+        if (phraseSearch.value.trim() !== query) return;
+        phraseHits.replaceChildren();
+        if (!res.ok) {
+          const err = document.createElement("p");
+          err.className = "doc-meta";
+          err.textContent = detail(body, "Could not search.");
+          phraseHits.append(err);
+          return;
+        }
+        const matches = body.matches || [];
+        if (!matches.length) {
+          const empty = document.createElement("p");
+          empty.className = "doc-meta";
+          empty.textContent = "No lines contain that phrase.";
+          phraseHits.append(empty);
+          return;
+        }
+        for (const hit of matches) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "ghost phrase-hit";
+          button.textContent = hit.name + ":" + hit.line + "  " + hit.text;
+          button.addEventListener("click", () => openPreview(hit.name));
+          phraseHits.append(button);
+        }
+      } catch (err) {
+        phraseHits.textContent = OFFLINE_MSG;
+      }
+    }
+
+    async function stageNewNote(event) {
+      event.preventDefault();
+      if (rebuilding) return;
+      const folder = newFolder.value.trim().replace(/^\/+|\/+$/g, "");
+      let name = newName.value.trim();
+      if (!name.toLowerCase().endsWith(".md")) name += ".md";
+      if (!name || name.includes("/") || name.includes("\\") || name.startsWith(".")) {
+        newNoteStatus.textContent = "Use a single .md file name.";
+        return;
+      }
+      const rel = folder ? folder + "/" + name : name;
+      if (lastDocs.some((doc) => doc.name === rel && doc.state !== "missing_on_disk")) {
+        newNoteStatus.textContent = "That file already exists. Edit it instead.";
+        return;
+      }
+      const title = name.replace(/\.md$/i, "").replace(/[-_]+/g, " ");
+      try {
+        const res = await fetch("/api/review/" + encPath(rel), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: "# " + title + "\n\n" }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
+        if (!res.ok) {
+          newNoteStatus.textContent = detail(body, "Could not stage the note.");
+          return;
+        }
+        newFolder.value = "";
+        newName.value = "";
+        newNoteStatus.textContent = "Staged for review.";
+        renderDocs(body.docs || [], body.num_chunks);
+        renderReview(body.proposals || [], body.unreadable || 0);
+        const proposal = (body.proposals || []).find((item) => item.target === rel);
+        if (proposal) openEditor(proposal);
+      } catch (err) {
+        newNoteStatus.textContent = OFFLINE_MSG;
+      }
+    }
+
+    async function stageMove(event) {
+      event.preventDefault();
+      if (!renameFrom || rebuilding) return;
+      renameStatus.textContent = "";
+      try {
+        const res = await fetch("/api/review/" + encPath(renameFrom) + "/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dest: renameDest.value.trim() }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
+        if (!res.ok) {
+          renameStatus.textContent = detail(body, "Could not stage the move.");
+          renameStatus.className = "err";
+          return;
+        }
+        renameDialog.close();
+        renderDocs(body.docs || [], body.num_chunks);
+        renderReview(body.proposals || [], body.unreadable || 0);
+        setLibStatus("Staged for review.");
+      } catch (err) {
+        renameStatus.textContent = OFFLINE_MSG;
+        renameStatus.className = "err";
+      }
+    }
 
     async function init() {
       if (document.body.classList.contains("locked")) return;

@@ -16,6 +16,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from chunk import chunk_directory, resolve_docs_dir
+from library import file_digest
 
 EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 DOCUMENT_PREFIX = "search_document: "
@@ -41,11 +42,17 @@ def build() -> dict:
     index.add(embeddings)
 
     files = sorted({c.source_file for c in chunks})
+    digests = {
+        rel: file_digest(docs_dir / rel)
+        for rel in files
+        if (docs_dir / rel).is_file()
+    }
     config = {
         "embedding_model": EMBEDDING_MODEL,
         "num_chunks": len(chunks),
         "indexed_at": datetime.now(timezone.utc).isoformat(),
         "files": files,
+        "digests": digests,
     }
 
     INDEX_DIR.mkdir(exist_ok=True)

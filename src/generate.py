@@ -220,10 +220,11 @@ def answer(
     question: str,
     top_k: int = 4,
     history: list | None = None,
+    scope: str | None = None,
 ) -> tuple[str, list[RetrievedChunk]]:
     turns = normalize_history(history)
     query = _search_question(question, turns)
-    chunks = prompt_excerpts(retrieve(query, top_k=top_k))
+    chunks = prompt_excerpts(retrieve(query, top_k=top_k, scope=scope))
     if not chunks:
         return NO_INFO, []
 
@@ -240,6 +241,7 @@ def answer_stream(
     top_k: int = 4,
     cancel: Event | None = None,
     history: list | None = None,
+    scope: str | None = None,
 ) -> Iterator[dict]:
     """Yield pipeline events: status → sources → token* → done (or error)."""
     turns = normalize_history(history)
@@ -254,19 +256,21 @@ def answer_stream(
     if turns and query != question:
         status["query"] = query
     yield status
-    chunks = prompt_excerpts(retrieve(query, top_k=top_k))
+    chunks = prompt_excerpts(retrieve(query, top_k=top_k, scope=scope))
     if _cancelled(cancel):
         return
 
     yield {
         "type": "sources",
         "ranking": chunks[0].rank_source if chunks else "vector",
+        "scope": scope or "",
         "chunks": [
             {
                 "n": i + 1,
                 "source_file": c.source_file,
                 "heading": c.heading,
                 "preview": chunk_preview(c.text),
+                "text": c.text,
                 "expanded": c.expanded,
                 "rerank_score": None if c.rerank_score is None else float(c.rerank_score),
             }
