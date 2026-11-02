@@ -218,6 +218,60 @@
       );
     }
 
+    function unescapeHtml(text) {
+      return text
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+    }
+
+    function posixStem(path) {
+      const parts = String(path).split("/").filter((part) => part.length > 0);
+      const base = parts.length ? parts[parts.length - 1] : "";
+      const dot = base.lastIndexOf(".");
+      if (dot <= 0) return base;
+      return base.slice(0, dot);
+    }
+
+    function resolveWikilink(target, names) {
+      if (typeof target !== "string" || !Array.isArray(names)) return null;
+      let raw = target.split("|")[0];
+      raw = raw.split("#")[0].trim();
+      if (!raw || raw.includes("\0") || raw.includes("\\")) return null;
+      if (raw.startsWith("/")) return null;
+      const parts = raw.split("/").filter((part) => part.length > 0);
+      if (!parts.length || parts.some((part) => part === "." || part === ".." || part.startsWith("."))) return null;
+      const want = parts.join("/");
+      const lowered = new Map();
+      for (const name of names) {
+        if (typeof name !== "string") continue;
+        lowered.set(name.toLowerCase(), name);
+      }
+      const withMd = want.toLowerCase().endsWith(".md") ? want : want + ".md";
+      const exact = lowered.get(want.toLowerCase()) || lowered.get(withMd.toLowerCase());
+      if (exact) return exact;
+      const stem = posixStem(want).toLowerCase();
+      const stems = names.filter((name) => typeof name === "string" && posixStem(name).toLowerCase() === stem);
+      if (stems.length === 1) return stems[0];
+      return null;
+    }
+
+    function wikilinkNames() {
+      return [...fileStates.keys()];
+    }
+
+    function linkifyWikilinks(escaped) {
+      return escaped.replace(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g, (match, target, alias, offset, source) => {
+        if (offset > 0 && source[offset - 1] === "!") return match;
+        const path = resolveWikilink(unescapeHtml(target), wikilinkNames());
+        if (!path) return match;
+        const label = alias != null ? alias : target;
+        return `<button type="button" class="wikilink" data-path="${escapeHtml(path)}">${label}</button>`;
+      });
+    }
+
     function renderInline(text) {
       const bits = [];
       const re = /`([^`]+)`/g;
@@ -232,6 +286,7 @@
       return bits.map((bit) => {
         if (bit.t === "code") return `<code>${escapeHtml(bit.v)}</code>`;
         let s = escapeHtml(bit.v);
+        s = linkifyWikilinks(s);
         s = s.replace(
           /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
           (_, label, href) =>
@@ -1694,6 +1749,11 @@
     threadsClose.addEventListener("click", () => threadsDialog.close());
     previewClose.addEventListener("click", () => previewDialog.close());
     previewAsk.addEventListener("click", askAboutFile);
+    previewBody.addEventListener("click", (event) => {
+      const link = event.target.closest("button.wikilink");
+      if (!link || !previewBody.contains(link) || !link.dataset.path) return;
+      openPreview(link.dataset.path);
+    });
     threadFilter.addEventListener("input", () => {
       threadQuery = threadFilter.value;
       threadFilterMobile.value = threadQuery;

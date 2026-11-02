@@ -80,6 +80,37 @@ def safe_folder(name: str) -> str:
     return path.as_posix()
 
 
+def resolve_wikilink(target: str, names: list[str]) -> str | None:
+    """Map a wikilink target onto one loaded note.
+
+    The exact relative path wins before a filename stem. Two files named
+    `notes.md` therefore do not make bare `notes` a link. Hidden segments
+    and `..` stay unresolved so a target cannot point outside the list.
+    """
+    if not isinstance(target, str):
+        return None
+    raw = target.split("|", 1)[0]
+    raw = raw.split("#", 1)[0].strip()
+    if not raw or "\x00" in raw or "\\" in raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute() or path.anchor:
+        return None
+    parts = path.parts
+    if not parts or any(part in (".", "..") or part.startswith(".") for part in parts):
+        return None
+    want = path.as_posix()
+    lowered = {name.lower(): name for name in names}
+    exact = lowered.get(want.lower()) or lowered.get((want if want.lower().endswith(".md") else want + ".md").lower())
+    if exact:
+        return exact
+    stem = Path(want).stem.lower()
+    stems = [name for name in names if Path(name).stem.lower() == stem]
+    if len(stems) == 1:
+        return stems[0]
+    return None
+
+
 def file_digest(path: Path) -> str:
     """SHA-256 of the file bytes. Used to tell an edit from a timestamp touch."""
     digest = hashlib.sha256()
