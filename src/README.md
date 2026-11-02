@@ -248,7 +248,7 @@ being able to discuss:
 | `static/library.html` | Library UI: review queue, editor, folder pills, preview, list, upload, delete, Re-index |
 | `static/app.css` | Shared dark/light theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
-| `static/sw.js` | Cache the UI shell only (`ask-northwind-v13`; not `/ws` or `/api/*`) |
+| `static/sw.js` | Cache the UI shell only (`ask-northwind-v15`; not `/ws` or `/api/*`) |
 
 ## Web UI
 
@@ -269,7 +269,7 @@ PORT=8000
 
 `PORT` must be an integer from 1 through 65535. On the other machine, open `http://<this-mac-lan-ip>:8000` (use the port you set). On this Mac, `ipconfig getifaddr en0` prints the Wi-Fi address (`en1` on some Macs). The page shell is still reachable, but Ask, the socket, and Library actions need the master password. One password, no accounts. The cookie lasts 10 days from last use (the idle window slides) and dies on logout. An open socket for that token closes then, and also when the idle window runs out. A new login does not revoke older tokens. Other machines on `HOST=0.0.0.0` use that password. `build_index.py`, `cli.py`, `eval.py`, `chunk.py`, and `retrieve.py` stay unlocked. The first inbound connection may need Python allowed under System Settings → Network → Firewall.
 
-Each turn labels a source `section` or `excerpt`, shows the heading, and shows the rerank logit when there is one. The order line says which ranking shipped. When the library is ahead of the index, a note links to Library. The page keeps the active thread. The model sees at most four earlier exchanges (8 messages, 6,000 characters, 1,500 per message). If the rewrite fails, search uses the previous question plus the new one.
+Each turn labels a source `section` or `excerpt`, shows the heading, and shows the rerank logit when there is one. The order line says which ranking shipped. A turn can show **How this was retrieved** (the best logit, vector briefs, and rerank briefs). A source badge reads **Changed since Re-index**, **Not in the index**, or **Missing from the library**. An empty thread lists up to five `##` headings and does not send them. Library's Ask link and heading links fill Search in and the draft. They do not send. `GET /api/docs?suggest=` returns `suggestions`. A bad `suggest` is HTTP 400. When the library is ahead of the index, a note links to Library. The page keeps the active thread. The model sees at most four earlier exchanges (8 messages, 6,000 characters, 1,500 per message). If the rewrite fails, search uses the previous question plus the new one.
 
 ## Library and re-index
 
