@@ -168,6 +168,75 @@ def rerank(query: str, candidates: list[RetrievedChunk]) -> list[RetrievedChunk]
     return sorted(candidates, key=lambda c: c.rerank_score, reverse=True)
 
 
+def _brief(chunks: list[RetrievedChunk], limit: int = 5) -> list[dict]:
+    rows = []
+    for chunk in chunks[:limit]:
+        rows.append(
+            {
+                "source_file": chunk.source_file,
+                "heading": chunk.heading,
+                "vector_score": float(chunk.vector_score),
+                "rerank_score": None if chunk.rerank_score is None else float(chunk.rerank_score),
+                "lexical_score": None,
+            }
+        )
+    return rows
+
+
+def _empty_trace(source: str = "vector") -> dict:
+    return {
+        "best_logit": None,
+        "trusted": False,
+        "rank_source": source,
+        "vector": [],
+        "rerank": [],
+        "lexical": [],
+    }
+
+
+def retrieve_explained(
+    query: str,
+    top_k: int = 4,
+    candidate_pool: int = 20,
+    use_reranker: bool = True,
+    trust_gate: bool = True,
+    scope: str | None = None,
+    hybrid: bool = False,
+) -> tuple[list[RetrievedChunk], dict]:
+    """Same selection as retrieve(), plus a score trace that holds no chunk text.
+
+    `hybrid` is accepted and ignored until lexical fusion lands. False keeps
+    the vector candidate pool, which is the pool eval measures.
+    """
+    del hybrid  # reserved for the hybrid-search plan
+    vector_hits = vector_search(query, top_k=candidate_pool, scope=scope)
+    if not use_reranker:
+        chosen = vector_hits[:top_k]
+        trace = _empty_trace("vector")
+        trace["vector"] = _brief(vector_hits)
+        return chosen, trace
+    ranked = rerank(query, list(vector_hits))
+    best = ranked[0].rerank_score if ranked else None
+    trusted = best is not None and best >= RERANK_TRUST
+    if trust_gate and not trusted:
+        shipped = sorted(ranked, key=lambda c: c.vector_score, reverse=True)
+        source = "vector"
+    else:
+        shipped = ranked
+        source = "rerank"
+    for chunk in shipped:
+        chunk.rank_source = source
+    trace = {
+        "best_logit": None if best is None else float(best),
+        "trusted": trusted,
+        "rank_source": source,
+        "vector": _brief(vector_hits),
+        "rerank": _brief(ranked),
+        "lexical": [],
+    }
+    return shipped[:top_k], trace
+
+
 def retrieve(
     query: str,
     top_k: int = 4,
@@ -175,27 +244,18 @@ def retrieve(
     use_reranker: bool = True,
     trust_gate: bool = True,
     scope: str | None = None,
+    hybrid: bool = False,
 ) -> list[RetrievedChunk]:
-    """Vector top-`candidate_pool`, optional rerank, then the trust gate.
-
-    `trust_gate=False` returns pure rerank order so eval can still show the
-    laptop-policy flip. The default restores vector order when the best
-    logit is below `RERANK_TRUST`.
-    """
-    candidates = vector_search(query, top_k=candidate_pool, scope=scope)
-    if not use_reranker:
-        return candidates[:top_k]
-    ranked = rerank(query, candidates)
-    best = ranked[0].rerank_score if ranked else None
-    trusted = best is not None and best >= RERANK_TRUST
-    if trust_gate and not trusted:
-        ranked = sorted(ranked, key=lambda c: c.vector_score, reverse=True)
-        source = "vector"
-    else:
-        source = "rerank"
-    for chunk in ranked:
-        chunk.rank_source = source
-    return ranked[:top_k]
+    chunks, _trace = retrieve_explained(
+        query,
+        top_k=top_k,
+        candidate_pool=candidate_pool,
+        use_reranker=use_reranker,
+        trust_gate=trust_gate,
+        scope=scope,
+        hybrid=hybrid,
+    )
+    return chunks
 
 
 def prompt_excerpts(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
