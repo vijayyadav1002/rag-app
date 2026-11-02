@@ -571,7 +571,13 @@
           ask.className = "ghost";
           ask.href = "/?scope=" + encodeURIComponent(doc.name);
           ask.textContent = "Ask";
-          actions.append(view, ask);
+          const fileReindex = document.createElement("button");
+          fileReindex.type = "button";
+          fileReindex.className = "ghost mutate";
+          fileReindex.textContent = "Re-index file";
+          fileReindex.disabled = rebuilding;
+          fileReindex.addEventListener("click", () => reindexOne(doc.name));
+          actions.append(view, ask, fileReindex);
           if (doc.state !== "missing_on_disk") actions.append(edit, move, del);
           row.append(main, actions);
           docList.append(row);
@@ -1079,6 +1085,35 @@
       await refreshLibrary();
       if (document.body.classList.contains("locked")) return;
       await refreshReview();
+    }
+
+    async function reindexOne(name) {
+      if (!confirm("Re-index this file? Search updates for this file only.")) return;
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
+      setRebuildLock(true);
+      setLibStatus("Rebuilding…");
+      try {
+        const res = await fetch("/api/reindex", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths: [name] }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
+        if (res.status === 409) {
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
+        setRebuildLock(false);
+        await refreshAll();
+        if (res.status === 400) setLibStatus(detail(body, "Re-index failed"), "err");
+        else if (!res.ok) setLibStatus(body.detail || "Re-index failed", "err");
+        else setLibStatus("Indexed " + body.num_chunks + " chunks.", "ok");
+      } catch (err) {
+        setLibStatus(OFFLINE_MSG, "err");
+        startRebuildPoll();
+      }
     }
 
     async function removeDoc(name) {

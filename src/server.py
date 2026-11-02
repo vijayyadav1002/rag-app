@@ -37,7 +37,7 @@ from auth import (
     token_key,
     touch,
 )
-from build_index import IndexBuildError, build
+from build_index import IndexBuildError, build, rebuild_paths
 from format_md import FormatError
 from generate import answer_stream
 from library import (
@@ -50,6 +50,7 @@ from library import (
     list_docs,
     read_doc,
     safe_folder,
+    safe_md_relpath,
     search_phrases,
 )
 from llm import LLMConfigError
@@ -356,8 +357,28 @@ def _raise_review(exc: Exception) -> None:
     raise exc
 
 
-def _rebuild_sync() -> dict:
-    config = build()
+def reindex_paths(payload):
+    """None means full build. A list is the file set. Bad shapes raise ValueError."""
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("Expected a JSON object.")
+    if "paths" not in payload:
+        return None
+    paths = payload["paths"]
+    if not isinstance(paths, list):
+        raise ValueError("Send a list of files.")
+    if any(not isinstance(item, str) for item in paths):
+        raise ValueError("Each file name must be a string.")
+    if len(paths) > 20:
+        raise ValueError("Send at most 20 files.")
+    if not paths:
+        raise ValueError("No files to re-index.")
+    return list(paths)
+
+
+def _rebuild_sync(paths: list[str] | None = None) -> dict:
+    config = build() if paths is None else rebuild_paths(paths)
     try:
         reload_index()
     except Exception as exc:
@@ -586,16 +607,32 @@ def api_reject(name: str):
 
 
 @app.post("/api/reindex")
-async def api_reindex():
+async def api_reindex(request: Request):
     global _rebuilding
     if _rebuilding:
         raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
+    # The page button posts no body. A file row sends JSON.
+    payload = None
+    content_type = request.headers.get("content-type", "")
+    if content_type.lower().startswith("application/json"):
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(400, "Expected JSON body.") from exc
+    try:
+        paths = reindex_paths(payload)
+        if paths is not None:
+            paths = [safe_md_relpath(name) for name in paths]
+    except UnsafeNameError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     _rebuilding = True
     rebuild: asyncio.Task | None = None
     try:
         await _idle().wait()
         # shield: a cancelled fetch must not abort the worker thread.
-        rebuild = asyncio.create_task(asyncio.to_thread(_rebuild_sync))
+        rebuild = asyncio.create_task(asyncio.to_thread(_rebuild_sync, paths))
         try:
             config = await asyncio.shield(rebuild)
         except IndexBuildError as exc:
