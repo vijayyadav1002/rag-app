@@ -154,6 +154,7 @@
         <div>
           <h2 id="preview-title">Document</h2>
           <p id="preview-meta"></p>
+          <div id="preview-asks" class="doc-actions"></div>
         </div>
         <button type="button" class="ghost" id="preview-close">Close</button>
       </header>
@@ -497,7 +498,11 @@
           move.textContent = "Move";
           move.disabled = rebuilding;
           move.addEventListener("click", () => openRename(doc.name));
-          actions.append(view);
+          const ask = document.createElement("a");
+          ask.className = "ghost";
+          ask.href = "/?scope=" + encodeURIComponent(doc.name);
+          ask.textContent = "Ask";
+          actions.append(view, ask);
           if (doc.state !== "missing_on_disk") actions.append(edit, move, del);
           row.append(main, actions);
           docList.append(row);
@@ -553,6 +558,26 @@
       }
     }
 
+    function setPreviewAsks(name, text) {
+      const list = document.createElement("div");
+      list.id = "preview-asks";
+      list.className = "doc-actions";
+      const source = typeof text === "string" ? text : "";
+      for (const line of source.split("\n")) {
+        if (!line.startsWith("## ")) continue;
+        const heading = line.slice(3).trim();
+        if (!heading || heading.length > 400) continue;
+        const link = document.createElement("a");
+        link.className = "ghost";
+        link.href = "/?scope=" + encodeURIComponent(name) + "&q=" + encodeURIComponent(heading);
+        link.textContent = "Ask: " + heading;
+        list.append(link);
+      }
+      const current = document.getElementById("preview-asks");
+      if (current) current.replaceWith(list);
+      else previewMeta.after(list);
+    }
+
     async function openPreview(name) {
       const doc = lastDocs.find((item) => item.name === name);
       previewTitle.textContent = name;
@@ -562,6 +587,7 @@
       }
       if (doc && doc.state) bits.push(STATE_LABEL[doc.state] || doc.state);
       previewMeta.textContent = bits.join(" · ") || "View only";
+      setPreviewAsks(name, "");
       previewBody.textContent = "Loading…";
       previewEdit.hidden = !doc || doc.state === "missing_on_disk";
       previewEdit.onclick = () => {
@@ -587,6 +613,7 @@
           return;
         }
         previewBody.innerHTML = renderMarkdown(body.body || "");
+        setPreviewAsks(name, typeof body.body === "string" ? body.body : "");
       } catch (err) {
         previewBody.textContent = OFFLINE_MSG;
       }

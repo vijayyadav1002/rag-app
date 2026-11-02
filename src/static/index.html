@@ -367,6 +367,7 @@
 
     let threadQuery = "";
     let pinnedFile = "";
+    let pendingLaunch = null;
     let vaultHasPto = true;
     let previewName = "";
 
@@ -1406,7 +1407,8 @@
         vaultLine.textContent = files.length + (files.length === 1 ? " file · " : " files · ") + chunks + (folders.length ? " · " + folders.join(", ") : "");
         fillScope(folders);
         syncComposer();
-        if (sugGen === suggestGen) renderSuggestions(body.suggestions);
+        if (applyLaunchDraft()) loadSuggestions();
+        else if (sugGen === suggestGen) renderSuggestions(body.suggestions);
       } catch (err) {
         if (gen !== vaultGen) return;
         vaultLine.textContent = "The library could not be loaded.";
@@ -1429,10 +1431,56 @@
       input.focus();
     }
 
-    function startAsk() {
+    function acceptScope(value) {
+      if (!value || value.includes("\0") || value.includes("\\")) return false;
+      if (value.startsWith("/")) return false;
+      const parts = value.split("/");
+      return parts.every((part) => part && part !== "." && part !== ".." && !part.startsWith("."));
+    }
+
+    function acceptQ(value) {
+      return value.length >= 1 && value.length <= 400;
+    }
+
+    function readLaunch() {
+      if (pendingLaunch) return;
+      const params = new URLSearchParams(location.search);
+      const scope = params.get("scope");
+      const q = params.get("q");
+      pendingLaunch = {
+        scope: typeof scope === "string" ? scope : "",
+        q: typeof q === "string" ? q : "",
+        done: false,
+      };
+    }
+
+    function applyLaunchDraft() {
+      if (!pendingLaunch || pendingLaunch.done) return false;
+      const scope = pendingLaunch.scope;
+      const q = pendingLaunch.q;
+      pendingLaunch.done = true;
+      let changed = false;
+      if (acceptScope(scope)) {
+        if (scope.endsWith(".md")) {
+          pinFile(scope);
+          changed = true;
+        } else if ([...scopeEl.options].some((opt) => opt.value === scope)) {
+          if (scopeEl.value !== scope) {
+            scopeEl.value = scope;
+            changed = true;
+          }
+        }
+      }
+      if (acceptQ(q)) input.value = q;
+      history.replaceState(null, "", "/");
+      return changed;
+    }
+
+    async function startAsk() {
+      readLaunch();
       connect();
       checkRebuildOnLoad();
-      loadVault();
+      await loadVault();
       if (!rebuilding && !answering) setStatus("Ready", "idle");
       input.focus();
     }
