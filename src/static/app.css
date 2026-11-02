@@ -391,6 +391,10 @@ body.ask-app:not(.locked) .workspace {
 }
 .chunks { display: grid; gap: 0.65rem; padding: 0.85rem; }
 .search-as { margin: 0; color: var(--amber); font-size: 0.85rem; }
+.trace { margin: 0 0 0.75rem; }
+.trace summary { cursor: pointer; color: var(--muted); }
+.trace ol { margin: 0.25rem 0 0.6rem; padding-left: 1.2rem; }
+.trace li { font-size: 0.85rem; }
 .chunk {
   border: 1px solid var(--line);
   border-radius: 0.5rem;

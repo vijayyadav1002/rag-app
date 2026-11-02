@@ -373,6 +373,41 @@
       };
     }
 
+    function snapshotBrief(item) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const score = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+      return {
+        source_file: typeof item.source_file === "string" ? item.source_file : "",
+        heading: typeof item.heading === "string" ? item.heading : "",
+        vector_score: score(item.vector_score),
+        rerank_score: score(item.rerank_score),
+        lexical_score: score(item.lexical_score),
+      };
+    }
+
+    function snapshotBriefs(value) {
+      if (value == null) return [];
+      if (!Array.isArray(value)) return null;
+      return value.slice(0, 5).map(snapshotBrief).filter(Boolean);
+    }
+
+    function snapshotTrace(trace) {
+      if (!trace || typeof trace !== "object" || Array.isArray(trace)) return null;
+      const vector = snapshotBriefs(trace.vector);
+      const rerank = snapshotBriefs(trace.rerank);
+      const lexical = snapshotBriefs(trace.lexical);
+      if (vector === null || rerank === null || lexical === null) return null;
+      const best = trace.best_logit;
+      return {
+        best_logit: typeof best === "number" && Number.isFinite(best) ? best : null,
+        trusted: trace.trusted === true,
+        rank_source: trace.rank_source === "rerank" ? "rerank" : "vector",
+        vector,
+        rerank,
+        lexical,
+      };
+    }
+
     function snapshotTurn(turn) {
       return {
         question: turn.question,
@@ -382,6 +417,7 @@
         scope: typeof turn.scope === "string" ? turn.scope : "",
         wrong: Boolean(turn.wrong),
         chunks: Array.isArray(turn.chunks) ? turn.chunks.map(snapshotChunk).filter(Boolean) : [],
+        trace: snapshotTrace(turn.trace),
       };
     }
 
@@ -835,6 +871,7 @@
         ranking: "",
         scope: "",
         wrong: false,
+        trace: null,
         record: null,
         chunks: [],
         md: "",
@@ -955,6 +992,54 @@
       }
     }
 
+    function traceScore(value) {
+      return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "";
+    }
+
+    function traceSentence(trace) {
+      const logit = trace.best_logit;
+      if (typeof logit === "number" && Number.isFinite(logit)) {
+        const shown = logit.toFixed(2);
+        if (trace.trusted === true) return "Best rerank score " + shown + ". Reranker order shipped.";
+        return "Best rerank score " + shown + ". Below 0, so vector order shipped.";
+      }
+      return "No rerank score. Vector order shipped.";
+    }
+
+    function appendTraceList(host, label, rows, scoreKey) {
+      const name = document.createElement("div");
+      name.textContent = label;
+      const list = document.createElement("ol");
+      const items = Array.isArray(rows) ? rows : [];
+      for (const brief of items) {
+        if (!brief || typeof brief !== "object") continue;
+        const file = typeof brief.source_file === "string" ? brief.source_file : "";
+        const heading = typeof brief.heading === "string" ? brief.heading : "";
+        const li = document.createElement("li");
+        li.textContent = file + " — " + heading + " — " + traceScore(brief[scoreKey]);
+        list.append(li);
+      }
+      host.append(name, list);
+    }
+
+    function appendTrace(host, trace) {
+      const details = document.createElement("details");
+      details.className = "trace";
+      const summary = document.createElement("summary");
+      summary.textContent = "How this was retrieved";
+      const lead = document.createElement("p");
+      lead.textContent = traceSentence(trace);
+      details.append(summary, lead);
+      appendTraceList(details, "Nearest vectors", trace.vector, "vector_score");
+      if (Array.isArray(trace.rerank) && trace.rerank.length) {
+        appendTraceList(details, "Reranker order", trace.rerank, "rerank_score");
+      }
+      if (Array.isArray(trace.lexical) && trace.lexical.length) {
+        appendTraceList(details, "Lexical matches", trace.lexical, "lexical_score");
+      }
+      host.append(details);
+    }
+
     function showSources(turn, chunks, ranking) {
       turn.chunks = chunks;
       turn.ranking = ranking;
@@ -972,6 +1057,9 @@
         line.className = "search-as";
         line.textContent = "Follow-up searched as: " + turn.query;
         el.append(line);
+      }
+      if (turn.trace && typeof turn.trace === "object" && !Array.isArray(turn.trace)) {
+        appendTrace(el, turn.trace);
       }
       if (!chunks.length) {
         const empty = document.createElement("p");
@@ -1062,6 +1150,7 @@
         scope: active.scope || "",
         wrong: Boolean(active.wrong),
         chunks: active.chunks || [],
+        trace: active.trace ?? null,
       };
       committed.push(record);
       active.record = record;
@@ -1085,6 +1174,7 @@
       view.wrong = Boolean(turn.wrong);
       view.scope = turn.scope || "";
       view.query = turn.query || "";
+      view.trace = turn.trace && typeof turn.trace === "object" && !Array.isArray(turn.trace) ? turn.trace : null;
       view.md = turn.answer;
       view.answerEl.dataset.md = turn.answer;
       view.answerEl.innerHTML = renderMarkdown(turn.answer);
@@ -1335,6 +1425,7 @@
       }
       if (event.type === "sources") {
         if (!turn) return;
+        turn.trace = event.trace ?? null;
         showSources(turn, event.chunks || [], event.ranking || "vector");
         return;
       }
