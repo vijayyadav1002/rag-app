@@ -284,9 +284,9 @@ def retrieve_explained(
 ) -> tuple[list[RetrievedChunk], dict]:
     """Same selection as retrieve(), plus a score trace that holds no chunk text.
 
-    `hybrid` False keeps the vector candidate pool, which is the pool eval
-    measures. True fuses BM25 hits into that pool before rerank. Ask does
-    not pass True yet.
+    `hybrid` False keeps the vector candidate pool. The first three eval
+    columns stay on that pool. True fuses BM25 hits into that pool before
+    rerank. Ask and the CLI use the fused pool.
     """
     vector_hits = vector_search(query, top_k=candidate_pool, scope=scope)
     lexical_hits = lexical_search(query, top_k=candidate_pool, scope=scope) if hybrid else []

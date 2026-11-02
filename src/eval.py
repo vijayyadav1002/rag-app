@@ -8,8 +8,8 @@ vector search alone, rerank order with the confidence gate off, the
 shipped retrieve() that keeps rerank order only when the best logit is
 at least 0, and that same gate on the hybrid candidate pool. The
 rerank-order column exists so a rerank mistake stays visible after the
-gate fixes it. Ask still searches with hybrid off; this column only
-scores the fused pool.
+gate fixes it. Ask and the CLI use the fused pool. The first three
+columns stay on the vector pool.
 
 In a production system this set would be much larger and ideally sourced
 from real user queries / support tickets, and you'd also track precision
