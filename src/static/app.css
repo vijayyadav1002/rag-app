@@ -426,6 +426,7 @@ body.ask-app:not(.locked) .workspace {
   font-size: 0.75rem;
 }
 .source-file:hover { color: var(--amber); }
+a.file-state { color: var(--amber); font-size: 0.8rem; margin-left: 0.4rem; }
 .chunk .kind, .score-pill { color: var(--dim); }
 .score-pill { color: var(--ok); }
 .chunk .preview {

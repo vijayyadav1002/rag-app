@@ -191,6 +191,11 @@
       retrieving: "Searching documents…",
       generating: "Writing answer…",
     };
+    const FILE_STATE_TEXT = {
+      changed: "Changed since Re-index",
+      not_indexed: "Not in the index",
+      missing_on_disk: "Missing from the library",
+    };
 
     let ws = null;
     let suppressClose = false;
@@ -201,6 +206,8 @@
     let active = null;
     let committed = [];
     let store = { version: 1, activeId: null, threads: [] };
+    const fileStates = new Map();
+    let vaultGen = 0;
 
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, (ch) =>
@@ -767,7 +774,9 @@
     function setIndexNote(stale) {
       indexNote.replaceChildren();
       if (!stale) {
+        const refresh = !indexNote.hidden;
         indexNote.hidden = true;
+        if (refresh) loadVault();
         return;
       }
       indexNote.hidden = false;
@@ -776,6 +785,7 @@
       link.href = "/library";
       link.textContent = "Re-index on the Library page.";
       indexNote.append(link);
+      loadVault();
     }
 
     function setRebuildLock(locked) {
@@ -1040,6 +1050,30 @@
       host.append(details);
     }
 
+    function setFileBadge(card, name) {
+      let badge = card.querySelector("a.file-state");
+      const label = FILE_STATE_TEXT[fileStates.get(name)] || "";
+      if (!label) {
+        if (badge) badge.remove();
+        return;
+      }
+      if (!badge) {
+        badge = document.createElement("a");
+        const file = card.querySelector(".source-file");
+        if (!file || !file.parentElement) return;
+        file.parentElement.append(badge);
+      }
+      badge.className = "file-state";
+      badge.href = "/library?doc=" + encodeURIComponent(name);
+      badge.textContent = label;
+    }
+
+    function paintFileState() {
+      document.querySelectorAll("#thread .chunk").forEach((card) => {
+        setFileBadge(card, card.dataset.source || "");
+      });
+    }
+
     function showSources(turn, chunks, ranking) {
       turn.chunks = chunks;
       turn.ranking = ranking;
@@ -1072,6 +1106,8 @@
         const card = document.createElement("article");
         card.className = "chunk";
         card.dataset.n = String(chunk.n);
+        const sourceName = typeof chunk.source_file === "string" ? chunk.source_file : "";
+        card.dataset.source = sourceName;
         const meta = document.createElement("div");
         meta.className = "meta";
         const left = document.createElement("div");
@@ -1101,6 +1137,7 @@
         preview.className = "preview";
         preview.textContent = chunk.preview || "";
         card.append(meta, preview);
+        setFileBadge(card, sourceName);
         el.append(card);
       }
       refreshSupport(turn);
@@ -1301,11 +1338,20 @@
     }
 
     async function loadVault() {
+      const gen = ++vaultGen;
       try {
         const res = await fetch("/api/docs");
+        if (gen !== vaultGen) return;
         if (!res.ok) return;
         const body = await res.json().catch(() => ({}));
+        if (gen !== vaultGen) return;
         const docs = Array.isArray(body.docs) ? body.docs : [];
+        fileStates.clear();
+        for (const doc of docs) {
+          if (!doc || typeof doc.name !== "string" || !doc.name) continue;
+          if (typeof doc.state !== "string") continue;
+          fileStates.set(doc.name, doc.state);
+        }
         const files = docs.filter((doc) => doc.state !== "missing_on_disk");
         vaultHasPto = files.some((doc) => doc.name === "pto_policy.md" || String(doc.name).endsWith("/pto_policy.md"));
         const folders = [...new Set(files.map((doc) => topFolder(doc.name)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -1314,7 +1360,10 @@
         fillScope(folders);
         syncComposer();
       } catch (err) {
+        if (gen !== vaultGen) return;
         vaultLine.textContent = "The library could not be loaded.";
+      } finally {
+        if (gen === vaultGen) paintFileState();
       }
     }
 
