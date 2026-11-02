@@ -270,7 +270,7 @@ rebuilds everything. Every item below is still not built.
 | `static/library.html` | Library UI: review queue, editor, folder pills, preview, list, upload, delete, Re-index |
 | `static/app.css` | Shared dark/light theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
-| `static/sw.js` | Cache the UI shell only (`ask-northwind-v16`; not `/ws` or `/api/*`) |
+| `static/sw.js` | Cache the UI shell only (`ask-northwind-v17`; not `/ws` or `/api/*`) |
 
 ## Web UI
 

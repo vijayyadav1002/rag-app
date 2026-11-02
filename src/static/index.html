@@ -438,6 +438,7 @@
     let pendingLaunch = null;
     let vaultHasPto = true;
     let previewName = "";
+    let previewGen = 0;
 
     function snapshotChunk(chunk) {
       if (!chunk || typeof chunk !== "object") return null;
@@ -1220,6 +1221,7 @@
 
     async function openPreview(name) {
       if (!name) return;
+      const gen = ++previewGen;
       previewName = name;
       previewTitle.textContent = name;
       previewMeta.textContent = "Loading…";
@@ -1228,12 +1230,14 @@
       if (!previewDialog.open) previewDialog.showModal();
       try {
         const res = await fetch("/api/docs/" + encPath(name));
+        if (gen !== previewGen) return;
         if (res.status === 401) {
           previewDialog.close();
           showLock(SESSION_ENDED);
           return;
         }
         const body = await res.json().catch(() => ({}));
+        if (gen !== previewGen) return;
         if (res.status === 404) {
           previewMeta.textContent = "";
           previewBody.textContent = "This file is no longer in the library.";
@@ -1247,6 +1251,7 @@
         previewMeta.textContent = "View only";
         previewBody.innerHTML = renderMarkdown(body.body || "");
       } catch (err) {
+        if (gen !== previewGen) return;
         previewMeta.textContent = "";
         previewBody.textContent = OFFLINE_MSG;
       }

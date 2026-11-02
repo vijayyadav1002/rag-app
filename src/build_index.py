@@ -7,7 +7,10 @@ full successful encode — a crash mid-write must not truncate chunks.faiss.
 
 A one-file edit does not re-embed the rest of the corpus: those rows are
 copied. The same temp replace is used, and a pickle that disagrees with
-the index is rebuilt from scratch instead of spliced.
+the index is rebuilt from scratch instead of spliced. A kept file with no
+digest is hashed before publish. The new indexed_at would otherwise make
+list_docs treat that copied row as fresh, because mtime is the fallback
+only when a digest is missing.
 """
 import json
 import pickle
@@ -174,6 +177,17 @@ def rebuild_paths(
     digests = dict(previous) if isinstance(previous, dict) else {}
     for rel in rels:
         digests.pop(rel, None)
+        path = docs_dir / rel
+        if path.is_file():
+            digests[rel] = file_digest(path)
+    # Copied rows are not re-embedded. A sibling with no digest still needs
+    # one: indexed_at moves, and list_docs uses mtime only when it is absent.
+    for rel in {c.source_file for c in kept_chunks}:
+        if not isinstance(rel, str):
+            continue
+        recorded = digests.get(rel)
+        if isinstance(recorded, str) and len(recorded) == 64:
+            continue
         path = docs_dir / rel
         if path.is_file():
             digests[rel] = file_digest(path)
