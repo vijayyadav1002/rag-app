@@ -29,6 +29,8 @@ import faiss
 import numpy as np
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
+from lexical import LexicalIndex
+
 INDEX_DIR = Path(__file__).parent / "index"
 EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 QUERY_PREFIX = "search_query: "
@@ -38,12 +40,13 @@ _embedder = None
 _reranker = None
 _index = None
 _chunks = None
+_lexical = None
 _state_lock = threading.Lock()
 
 
 def reload() -> None:
     """Re-read FAISS + chunk metadata from disk. Keep models if already loaded."""
-    global _embedder, _reranker, _index, _chunks
+    global _embedder, _reranker, _index, _chunks, _lexical
     config_path = INDEX_DIR / "config.json"
     if config_path.exists():
         with open(config_path) as f:
@@ -60,9 +63,11 @@ def reload() -> None:
     new_index = faiss.read_index(str(INDEX_DIR / "chunks.faiss"))
     with open(INDEX_DIR / "metadata.pkl", "rb") as f:
         new_chunks = pickle.load(f)
+    new_lexical = LexicalIndex(new_chunks)
     with _state_lock:
         _index = new_index
         _chunks = new_chunks
+        _lexical = new_lexical
 
 
 def _load():
@@ -75,6 +80,8 @@ RERANK_FLOOR = 0.0
 RERANK_MARGIN = 1.0
 # MS MARCO logit. Below this, P(relevant) < 0.5, so rerank order is not trusted.
 RERANK_TRUST = 0.0
+# Reciprocal rank fusion constant. Rank 1 contributes 1/61 from each list.
+RRF_K = 60
 
 
 @dataclass
@@ -88,6 +95,7 @@ class RetrievedChunk:
     section_text: str = ""
     expanded: bool = False
     rank_source: str = "vector"
+    lexical_score: float | None = None
 
 
 def in_scope(source_file: str, scope: str | None) -> bool:
@@ -156,6 +164,75 @@ def vector_search(query: str, top_k: int = 20, scope: str | None = None) -> list
     return results
 
 
+def lexical_search(query: str, top_k: int = 20, scope: str | None = None) -> list[RetrievedChunk]:
+    """BM25 hits. `vector_score` is the cosine so the trust gate can sort this pool too."""
+    _load()
+    q_emb = _embedder.encode([QUERY_PREFIX + query], normalize_embeddings=True)
+    q_emb = np.asarray(q_emb, dtype="float32")
+    with _state_lock:
+        lexical = _lexical
+        chunks = _chunks
+        index = _index
+        if lexical is None or not chunks or index is None:
+            return []
+        allowed = None
+        if scope:
+            allowed = {
+                i
+                for i, chunk in enumerate(chunks)
+                if in_scope(getattr(chunk, "source_file", ""), scope)
+            }
+            if not allowed:
+                return []
+        hits = lexical.search(query, top_k, allowed)
+        rows = []
+        for idx, score in hits:
+            vec = float(np.dot(index.reconstruct(int(idx)), q_emb[0]))
+            chunk = chunks[idx]
+            rows.append(
+                RetrievedChunk(
+                    chunk_id=chunk.chunk_id,
+                    source_file=chunk.source_file,
+                    text=chunk.text,
+                    vector_score=vec,
+                    heading=getattr(chunk, "heading", "") or "",
+                    section_text=getattr(chunk, "section_text", "") or "",
+                    lexical_score=float(score),
+                )
+            )
+        return rows
+
+
+def fuse_rrf(
+    vector: list[RetrievedChunk],
+    lexical: list[RetrievedChunk],
+    limit: int,
+    k: int = RRF_K,
+) -> list[RetrievedChunk]:
+    """Union by chunk id. Reciprocal rank sums; a tie keeps the higher vector score."""
+    by_id: dict[str, RetrievedChunk] = {}
+    for chunk in vector:
+        by_id[chunk.chunk_id] = chunk
+    for chunk in lexical:
+        existing = by_id.get(chunk.chunk_id)
+        if existing is None:
+            by_id[chunk.chunk_id] = chunk
+        else:
+            existing.lexical_score = chunk.lexical_score
+    rank_v = {chunk.chunk_id: i + 1 for i, chunk in enumerate(vector)}
+    rank_l = {chunk.chunk_id: i + 1 for i, chunk in enumerate(lexical)}
+    scored = []
+    for cid, chunk in by_id.items():
+        score = 0.0
+        if cid in rank_v:
+            score += 1.0 / (k + rank_v[cid])
+        if cid in rank_l:
+            score += 1.0 / (k + rank_l[cid])
+        scored.append((score, chunk.vector_score, chunk))
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    return [item[2] for item in scored[:limit]]
+
+
 def rerank(query: str, candidates: list[RetrievedChunk]) -> list[RetrievedChunk]:
     """Stage 2: precise reordering of a small candidate set."""
     _load()
@@ -177,7 +254,9 @@ def _brief(chunks: list[RetrievedChunk], limit: int = 5) -> list[dict]:
                 "heading": chunk.heading,
                 "vector_score": float(chunk.vector_score),
                 "rerank_score": None if chunk.rerank_score is None else float(chunk.rerank_score),
-                "lexical_score": None,
+                "lexical_score": None
+                if getattr(chunk, "lexical_score", None) is None
+                else float(chunk.lexical_score),
             }
         )
     return rows
@@ -205,17 +284,20 @@ def retrieve_explained(
 ) -> tuple[list[RetrievedChunk], dict]:
     """Same selection as retrieve(), plus a score trace that holds no chunk text.
 
-    `hybrid` is accepted and ignored until lexical fusion lands. False keeps
-    the vector candidate pool, which is the pool eval measures.
+    `hybrid` False keeps the vector candidate pool, which is the pool eval
+    measures. True fuses BM25 hits into that pool before rerank. Ask does
+    not pass True yet.
     """
-    del hybrid  # reserved for the hybrid-search plan
     vector_hits = vector_search(query, top_k=candidate_pool, scope=scope)
+    lexical_hits = lexical_search(query, top_k=candidate_pool, scope=scope) if hybrid else []
     if not use_reranker:
         chosen = vector_hits[:top_k]
         trace = _empty_trace("vector")
         trace["vector"] = _brief(vector_hits)
+        trace["lexical"] = _brief(lexical_hits) if hybrid else []
         return chosen, trace
-    ranked = rerank(query, list(vector_hits))
+    pool = fuse_rrf(vector_hits, lexical_hits, candidate_pool) if lexical_hits else list(vector_hits)
+    ranked = rerank(query, list(pool))
     best = ranked[0].rerank_score if ranked else None
     trusted = best is not None and best >= RERANK_TRUST
     if trust_gate and not trusted:
@@ -232,7 +314,7 @@ def retrieve_explained(
         "rank_source": source,
         "vector": _brief(vector_hits),
         "rerank": _brief(ranked),
-        "lexical": [],
+        "lexical": _brief(lexical_hits) if hybrid else [],
     }
     return shipped[:top_k], trace
 
@@ -290,6 +372,7 @@ def prompt_excerpts(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
                 section_text=chunk.section_text,
                 expanded=True,
                 rank_source=chunk.rank_source,
+                lexical_score=chunk.lexical_score,
             )
             if key in slot:
                 if out[slot[key]].expanded:
