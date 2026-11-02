@@ -415,6 +415,14 @@ if __name__ == "__main__":
         print(f"[rerank {c.rerank_score:.3f} | vec {c.vector_score:.3f}] {c.source_file} :: {c.chunk_id}")
         print(f"  {c.text[:120]}...")
 
+    print("\n--- Hybrid (top 4) ---")
+    fused = retrieve(query, top_k=4, hybrid=True)
+    fused_how = fused[0].rank_source if fused else "vector"
+    print(f"Order: {fused_how}")
+    for c in fused:
+        print(f"[rerank {c.rerank_score:.3f} | vec {c.vector_score:.3f}] {c.source_file} :: {c.chunk_id}")
+        print(f"  {c.text[:120]}...")
+
     print("\n--- Prompt excerpts ---")
     for c in prompt_excerpts(ranked):
         kind = "section" if c.expanded else "excerpt"
