@@ -609,9 +609,9 @@ def api_reject(name: str):
 @app.post("/api/reindex")
 async def api_reindex(request: Request):
     global _rebuilding
-    if _rebuilding:
-        raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
     # The page button posts no body. A file row sends JSON.
+    # Read the body before the lock. An await between the 409 check and the
+    # flag lets a second request publish into the same index/.tmp.
     payload = None
     content_type = request.headers.get("content-type", "")
     if content_type.lower().startswith("application/json"):
@@ -627,6 +627,8 @@ async def api_reindex(request: Request):
         raise HTTPException(400, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if _rebuilding:
+        raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
     _rebuilding = True
     rebuild: asyncio.Task | None = None
     try:
