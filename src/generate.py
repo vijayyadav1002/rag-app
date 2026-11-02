@@ -224,7 +224,7 @@ def answer(
 ) -> tuple[str, list[RetrievedChunk]]:
     turns = normalize_history(history)
     query = _search_question(question, turns)
-    chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=False)
+    chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
     chunks = prompt_excerpts(chunks)
     if not chunks:
         return NO_INFO, []
@@ -257,7 +257,7 @@ def answer_stream(
     if turns and query != question:
         status["query"] = query
     yield status
-    chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=False)
+    chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
     chunks = prompt_excerpts(chunks)
     if _cancelled(cancel):
         return
