@@ -302,6 +302,79 @@ def search_phrases(
     return hits
 
 
+def _in_scope(source_file: str, scope: str | None) -> bool:
+    """Same scope rule as retrieval, without importing retrieve.
+
+    Empty scope matches everything. A `.md` scope is an exact path.
+    Anything else is that folder prefix.
+    """
+    if not scope:
+        return True
+    if scope.lower().endswith(".md"):
+        return source_file == scope
+    prefix = scope.rstrip("/")
+    return source_file == prefix or source_file.startswith(prefix + "/")
+
+
+def _heading_text(line: str) -> str | None:
+    if not line.startswith("## "):
+        return None
+    text = line[3:].replace("`", "").replace("*", "").strip()
+    if len(text) < 8 or len(text) > 120:
+        return None
+    return text
+
+
+def heading_questions(
+    scope: str | None = None,
+    docs_dir: Path | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """Heading buttons for an empty Ask thread.
+
+    Walking files in path order would fill the row from the first note.
+    Round-robin keeps a later file visible. Backtick and star marks are
+    not part of the question, and a very short line is not a heading
+    worth suggesting.
+    """
+    docs_dir = docs_dir or DOCS_DIR
+    queues: list[tuple[str, list[str]]] = []
+    for path, rel in markdown_paths(docs_dir):
+        if not _in_scope(rel, scope):
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        headings: list[str] = []
+        for line in lines:
+            question = _heading_text(line)
+            if question is None:
+                continue
+            headings.append(question)
+            if len(headings) >= 8:
+                break
+        if headings:
+            queues.append((rel, headings))
+    picked: list[dict] = []
+    if limit < 1:
+        return picked
+    depth = 0
+    while len(picked) < limit:
+        grew = False
+        for rel, headings in queues:
+            if depth >= len(headings):
+                continue
+            picked.append({"question": headings[depth], "scope": rel})
+            grew = True
+            if len(picked) >= limit:
+                break
+        if not grew:
+            break
+        depth += 1
+    return picked
+
+
 def delete_doc(name: str, docs_dir: Path | None = None) -> None:
     path, rel = live_path(name, docs_dir)
     if not path.is_file():

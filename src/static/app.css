@@ -337,6 +337,8 @@ body.ask-app:not(.locked) .workspace {
   color: var(--muted);
 }
 .index-note { color: var(--amber); }
+#suggestions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0 0; }
+#suggestions[hidden] { display: none; }
 .turn {
   padding: 0 0 1.4rem;
   scroll-margin-bottom: 8rem;

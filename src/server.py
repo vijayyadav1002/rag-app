@@ -45,6 +45,7 @@ from library import (
     UnsafeNameError,
     UploadError,
     clean_scope,
+    heading_questions,
     index_meta,
     list_docs,
     read_doc,
@@ -445,10 +446,16 @@ def api_status() -> dict:
 
 
 @app.get("/api/docs")
-def api_docs(q: str = "") -> dict:
+def api_docs(q: str = "", suggest: str | None = None) -> dict:
     body = _docs_body()
     if q.strip():
         body["matches"] = search_phrases(q)
+    if suggest is not None:
+        try:
+            scope = None if suggest == "" else clean_scope(suggest)
+        except UnsafeNameError as exc:
+            raise HTTPException(400, "Choose a folder or a file.") from exc
+        body["suggestions"] = heading_questions(scope or None)
     return body
 
 

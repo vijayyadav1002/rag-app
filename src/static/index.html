@@ -57,6 +57,7 @@
       <div id="thread-scroll">
         <div class="thread-inner">
           <p class="lede" id="empty-ask">Answers use only the mounted documents. A follow-up keeps this conversation. New chat starts another one.</p>
+          <div id="suggestions" hidden></div>
           <p id="vault-line" class="vault-line">Loading the library…</p>
           <p id="index-note" class="index-note" hidden></p>
           <div id="thread"></div>
@@ -148,6 +149,7 @@
     const threadEl = document.getElementById("thread");
     const threadScroll = document.getElementById("thread-scroll");
     const emptyAsk = document.getElementById("empty-ask");
+    const suggestionsEl = document.getElementById("suggestions");
     const vaultLine = document.getElementById("vault-line");
     const scopeEl = document.getElementById("scope");
     const threadFilter = document.getElementById("thread-filter");
@@ -208,6 +210,7 @@
     let store = { version: 1, activeId: null, threads: [] };
     const fileStates = new Map();
     let vaultGen = 0;
+    let suggestGen = 0;
 
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, (ch) =>
@@ -746,7 +749,9 @@
     }
 
     function syncEmpty() {
-      emptyAsk.hidden = threadEl.childElementCount > 0;
+      const filled = threadEl.childElementCount > 0;
+      emptyAsk.hidden = filled;
+      suggestionsEl.hidden = filled || suggestionsEl.childElementCount === 0;
     }
 
     function syncComposer() {
@@ -1337,10 +1342,52 @@
       scopeEl.value = values.includes(current) ? current : "";
     }
 
+    function docsUrl() {
+      return "/api/docs?suggest=" + encodeURIComponent(scopeEl.value);
+    }
+
+    function renderSuggestions(items) {
+      suggestionsEl.replaceChildren();
+      const list = Array.isArray(items) ? items.slice(0, 5) : [];
+      for (const item of list) {
+        if (!item || typeof item.question !== "string" || !item.question) continue;
+        const scope = typeof item.scope === "string" ? item.scope : "";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ghost suggest";
+        button.textContent = item.question;
+        button.addEventListener("click", () => {
+          input.value = item.question;
+          if (scope.endsWith(".md")) {
+            pinFile(scope);
+            loadSuggestions();
+          }
+          input.focus();
+        });
+        suggestionsEl.append(button);
+      }
+      syncEmpty();
+    }
+
+    async function loadSuggestions() {
+      const gen = ++suggestGen;
+      try {
+        const res = await fetch(docsUrl());
+        if (gen !== suggestGen) return;
+        if (!res.ok) return;
+        const body = await res.json().catch(() => ({}));
+        if (gen !== suggestGen) return;
+        renderSuggestions(body.suggestions);
+      } catch (err) {
+        if (gen !== suggestGen) return;
+      }
+    }
+
     async function loadVault() {
       const gen = ++vaultGen;
+      const sugGen = ++suggestGen;
       try {
-        const res = await fetch("/api/docs");
+        const res = await fetch(docsUrl());
         if (gen !== vaultGen) return;
         if (!res.ok) return;
         const body = await res.json().catch(() => ({}));
@@ -1359,6 +1406,7 @@
         vaultLine.textContent = files.length + (files.length === 1 ? " file · " : " files · ") + chunks + (folders.length ? " · " + folders.join(", ") : "");
         fillScope(folders);
         syncComposer();
+        if (sugGen === suggestGen) renderSuggestions(body.suggestions);
       } catch (err) {
         if (gen !== vaultGen) return;
         vaultLine.textContent = "The library could not be loaded.";
@@ -1367,12 +1415,16 @@
       }
     }
 
-    function askAboutFile() {
-      if (!previewName) return;
-      pinnedFile = previewName;
+    function pinFile(name) {
+      pinnedFile = name;
       const folders = [...scopeEl.options].map((opt) => opt.value).filter((value) => value && !value.endsWith(".md"));
       fillScope(folders);
-      scopeEl.value = previewName;
+      scopeEl.value = name;
+    }
+
+    function askAboutFile() {
+      if (!previewName) return;
+      pinFile(previewName);
       if (previewDialog.open) previewDialog.close();
       input.focus();
     }
@@ -1569,6 +1621,7 @@
     }
 
     form.addEventListener("submit", ask);
+    scopeEl.addEventListener("change", () => loadSuggestions());
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
