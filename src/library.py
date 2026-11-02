@@ -1,13 +1,14 @@
 """Operate the corpus folder for the PWA library.
 
-Upload accepts basenames only (no slashes) and writes into the DOCS_DIR
-root. Delete and list use posix-relative paths so nested files already on
-disk can be shown and removed. The chunker only reads markdown. Upload and
-delete only touch files on disk. They do not rebuild FAISS — search still
-reads index/ until someone calls build() + reload(). List marks an indexed
-file `changed` when its bytes differ from the digest stored at index
-time. An older index with no digests still falls back to mtime, because a
-cloud sync can touch a timestamp without changing the text.
+A multipart `folder` prefixes the basename. A missing folder still writes
+the root. Upload accepts basenames only (no slashes). Delete and list use
+posix-relative paths so nested files already on disk can be shown and
+removed. The chunker only reads markdown. Upload and delete only touch
+files on disk. They do not rebuild FAISS — search still reads index/
+until someone calls build() + reload(). List marks an indexed file
+`changed` when its bytes differ from the digest stored at index time. An
+older index with no digests still falls back to mtime, because a cloud
+sync can touch a timestamp without changing the text.
 """
 from __future__ import annotations
 
@@ -58,6 +59,24 @@ def safe_md_relpath(name: str) -> str:
         raise UnsafeNameError("Unsafe filename.")
     if not path.name.lower().endswith(".md") or len(path.name) < 4:
         raise UnsafeNameError("Only .md filenames are allowed.")
+    return path.as_posix()
+
+
+def safe_folder(name: str) -> str:
+    """Folder prefix joined in front of an upload basename.
+
+    A slash stays out of the filename. Hidden segments and `..` would hide
+    a note or leave the corpus, so those prefixes are refused.
+    """
+    raw = name.strip()
+    if not raw or "\x00" in raw or "\\" in raw:
+        raise UnsafeNameError("Unsafe folder.")
+    path = Path(raw)
+    if path.is_absolute() or path.anchor:
+        raise UnsafeNameError("Unsafe folder.")
+    parts = path.parts
+    if not parts or any(part in (".", "..") or part.startswith(".") for part in parts):
+        raise UnsafeNameError("Unsafe folder.")
     return path.as_posix()
 
 

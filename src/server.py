@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from auth import (
     COOKIE_NAME,
@@ -49,6 +49,7 @@ from library import (
     index_meta,
     list_docs,
     read_doc,
+    safe_folder,
     search_phrases,
 )
 from llm import LLMConfigError
@@ -470,15 +471,23 @@ def api_read_doc(name: str) -> dict:
 
 
 @app.post("/api/docs")
-async def api_upload(files: list[UploadFile] = File(default=[])):
+async def api_upload(
+    files: list[UploadFile] = File(default=[]),
+    folder: str = Form(""),
+):
     _unlocked()
     if not files or len(files) > MAX_UPLOAD_FILES:
         raise HTTPException(400, "Send between 1 and 20 markdown files.")
+    if folder.strip():
+        try:
+            safe_folder(folder)
+        except UnsafeNameError as exc:
+            raise HTTPException(400, str(exc)) from exc
     errors = []
     for uf in files:
         data = await uf.read()
         try:
-            stage_upload(uf.filename or "", data)
+            stage_upload(uf.filename or "", data, folder=folder)
         except UploadError as exc:
             errors.append({"name": uf.filename or "", "message": str(exc)})
     if errors and len(errors) == len(files):
