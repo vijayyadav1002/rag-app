@@ -8,7 +8,7 @@ explain every stage of a RAG system, not just call a library.
 ## Pipeline
 
 ```
-DOCS_DIR (default docs/*.md) — Library can write these; Re-index calls build()
+DOCS_DIR (default docs/*.md) — Library can write these; the page Re-index calls build()
    │  chunk.py        — heading-aware chunking with overlap
    ▼
 build_index.py         — embed chunks (sentence-transformers), index (FAISS)
@@ -78,8 +78,9 @@ CLI scripts do not read `LOCK_PASSWORD`.
 
 Optional `DOCS_DIR` points the corpus (chunking, Library upload/delete, Re-index)
 at another markdown folder. Relative paths are from `src/`. Unset keeps
-`docs/`. Nested `*.md` files are indexed; Upload still writes a basename into
-that folder's root. Restart and Re-index after changing it. `index/` stays here.
+`docs/`. Nested `*.md` files are indexed. An upload while a folder pill is
+selected is staged at `folder/basename.md`. Approve still does not rebuild.
+Restart and Re-index after changing it. `index/` stays here.
 
 Optional `HOST` and `PORT` are the Web UI bind address. Unset keeps
 `127.0.0.1` port `8000`. See “Web UI”.
@@ -206,10 +207,16 @@ That is a model limit; the prompt is the same.
 
 These are deliberately **not** implemented here — this is a 3-day learning
 build, not a shipped system — but they're the right next steps and worth
-being able to discuss. Hybrid BM25 is the exception: Ask already searches
-the fused pool above (`src/lexical.py`, `k1 = 1.5`, `b = 0.75`, RRF
-`k = 60`). Wikilinks, one-file re-index, and upload-into-folder are still
-not built, along with every item below.
+being able to discuss. Hybrid BM25 is already in: Ask searches the fused
+pool above (`src/lexical.py`, `k1 = 1.5`, `b = 0.75`, RRF `k = 60`).
+An upload while a folder pill is selected is staged at `folder/basename.md`,
+and Approve still does not rebuild. `[[target]]` and `[[target|label]]`
+open a resolved note in the preview. Ambiguous stems stay text. `![[...]]`
+stays text. `POST /api/reindex` with `{"paths": [...]}` embeds those files
+only, copies the other vectors and the other digests, refuses an empty
+corpus without replacing the index, and falls back to a full `build()`
+when the faiss row count disagrees with the pickle. The page button still
+rebuilds everything. Every item below is still not built.
 
 - **Multi-query expansion**: Ask already rewrites one follow-up into a
   single standalone search question. A production system often searches
@@ -246,7 +253,7 @@ not built, along with every item below.
 |---|---|
 | `docs/` | Default corpus (`DOCS_DIR`); synthetic Northwind markdown |
 | `chunk.py` | Heading-aware chunking with overlap |
-| `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`) |
+| `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`). A `paths` re-index embeds those files only and copies the other vectors and the other digests |
 | `lexical.py` | Okapi BM25 (`k1 = 1.5`, `b = 0.75`); tokens are `[a-z0-9]+` after lowercasing |
 | `retrieve.py` | Vector search + BM25; Ask fuses them with RRF `k = 60`, then the cross-encoder and the same gate; expand a strong hit to its `##` section after ranking; `reload()` hot-swaps FAISS and the BM25 index |
 | `generate.py` | Prompt assembly + citations; `answer` and `answer_stream` pass `hybrid=True`; follow-ups become one standalone search question; recent turns stay in the answer prompt (`answer_stream` for the UI) |
@@ -263,7 +270,7 @@ not built, along with every item below.
 | `static/library.html` | Library UI: review queue, editor, folder pills, preview, list, upload, delete, Re-index |
 | `static/app.css` | Shared dark/light theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
-| `static/sw.js` | Cache the UI shell only (`ask-northwind-v15`; not `/ws` or `/api/*`) |
+| `static/sw.js` | Cache the UI shell only (`ask-northwind-v16`; not `/ws` or `/api/*`) |
 
 ## Web UI
 
@@ -288,6 +295,6 @@ Each turn labels a source `section` or `excerpt`, shows the heading, and shows t
 
 ## Library and re-index
 
-Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Category pills are the folder names directly under that corpus. Upload is markdown only (basename, 1 MB, up to 20 files). Preview opens the file read-only. An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. The lock is in front of the page. Approve is still the human gate that writes the corpus. Unlocking does not write files. Approving does not replace the password. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
+Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Category pills are the folder names directly under that corpus. Upload is markdown only (basename, 1 MB, up to 20 files). An upload while a folder pill is selected is staged at `folder/basename.md`. Preview opens the file read-only. `[[target]]` and `[[target|label]]` open a resolved note in the preview. Ambiguous stems stay text. `![[...]]` stays text. An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. The lock is in front of the page. Approve is still the human gate that writes the corpus. Unlocking does not write files. Approving does not replace the password. Search still changes only on Re-index. Approve still does not rebuild. The page button still rebuilds everything: it posts no body, so `build()` embeds every `*.md` under `DOCS_DIR` and hot-reloads search. `POST /api/reindex` with `{"paths": [...]}` embeds those files only, copies the other vectors and the other digests, refuses an empty corpus without replacing the index, and falls back to a full `build()` when the faiss row count disagrees with the pickle. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
-Per-user accounts and OAuth stay out, along with PDF/Word, a server-side chat log, auto-reindex on upload, offline Q&A, wikilinks, one-file re-index, and upload-into-folder. Conversation threads stay in the browser.
+Per-user accounts and OAuth stay out, along with PDF/Word, a server-side chat log, auto-reindex on upload, and offline Q&A. Conversation threads stay in the browser.

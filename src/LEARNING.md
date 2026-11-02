@@ -184,8 +184,8 @@ answer text + source list
    └─ server.py / index.html WebSocket events, threads kept in the browser
 
                     LIBRARY (separate from a question)
-upload / edit / delete → review/*.json → Approve writes DOCS_DIR
-                                      → Re-index calls build() + reload()
+upload / edit / delete → review/*.json → Approve writes DOCS_DIR (no rebuild)
+                                      → page Re-index calls build() + reload()
 ```
 
 **Who talks to whom**
@@ -194,7 +194,7 @@ upload / edit / delete → review/*.json → Approve writes DOCS_DIR
 - `server.py` → `generate.answer_stream` → rewrite when there is history, then the same retrieve and prompt → `llm.stream` → token events
 - `eval.py` → `retrieve` only. **No LLM, no section expansion.** That is deliberate.
 - `chunk.py` is imported by `build_index.py`. Query time does not re-chunk. It reads the pickle.
-- Library upload, edit, and delete write `review/*.json`. Approve writes `DOCS_DIR`. Re-index is the only path that calls `build()` and `reload()`.
+- Library upload, edit, and delete write `review/*.json`. Approve writes `DOCS_DIR` and still does not rebuild. The page Re-index button calls `build()` and `reload()` and still rebuilds everything. `POST /api/reindex` with `{"paths": [...]}` embeds those files only, copies the other vectors and the other digests, refuses an empty corpus without replacing the index, and falls back to a full `build()` when the faiss row count disagrees with the pickle.
 
 Paths are always `Path(__file__).parent`, never “whatever directory you happened to `cd` into,” except that you still *run* the scripts from `src/` so imports like `from chunk import …` resolve.
 
@@ -334,7 +334,7 @@ If a section is ≤ 800 chars, it is one piece. If longer, take `[0:800]`, then 
 
 That heading prefix is an embedding trick: the vector for “1.25 days per month” also contains “Paid Time Off (PTO) Policy > Accrual”, so a query about PTO still matches even if the body never repeats the words “paid time off.” It is a different idea from Nomic’s `search_document:` / `search_query:` prefixes (task instructions for the model, not titles).
 
-**`markdown_paths` / `chunk_directory`** — recurse for `*.md`, skip hidden path parts and symlink escapes, and sort by the posix-relative path so index order is deterministic. `source_file` is that relative path (`pto_policy.md`, or `hr/pto.md` if a nested file is already on disk). Upload still accepts only a basename and stages it at the folder root. `DOCS_DIR`, loaded from `.env` here, overrides `src/docs`. Relative values are from `src/`, not the shell cwd.
+**`markdown_paths` / `chunk_directory`** — recurse for `*.md`, skip hidden path parts and symlink escapes, and sort by the posix-relative path so index order is deterministic. `source_file` is that relative path (`pto_policy.md`, or `hr/pto.md` if a nested file is already on disk). An upload while a folder pill is selected is staged at `folder/basename.md`. Approve still does not rebuild. `DOCS_DIR`, loaded from `.env` here, overrides `src/docs`. Relative values are from `src/`, not the shell cwd.
 
 **`python chunk.py`** — prints chunk count and the first five chunks. Use this when you change the splitter; you want to *see* the cuts.
 
@@ -371,7 +371,9 @@ FAISS does **not** store the original English. It stores the numbers. That is wh
 
 `index/` is gitignored. A fresh clone has no index. That is expected.
 
-**`python build_index.py`** — run after every `docs/` edit. First run may download the Hugging Face model into a local cache; later runs reuse it.
+**`python build_index.py`** — run after every `docs/` edit. First run may download the Hugging Face model into a local cache; later runs reuse it. That command is a full `build()`.
+
+**`rebuild_paths`** — `POST /api/reindex` with `{"paths": [...]}` embeds those files only, copies the other vectors and the other digests, refuses an empty corpus without replacing the index, and falls back to a full `build()` when the faiss row count disagrees with the pickle. The page button still rebuilds everything.
 
 ---
 
@@ -602,11 +604,11 @@ One page: a thread of turns, a composer stuck to the bottom, connection state be
 
 **`static/library.html`, `review.py`, `format_md.py`**
 
-Library is a second page, not a panel on Ask. Upload and delete stage a JSON proposal immediately under `review/` (gitignored, so the chunker never indexes it). Edit opens the live file in the editor and does not write anything until **Save draft**, **Format**, or **Approve**. Format saves the textarea first, then calls the model. One path has one open proposal; a later submit replaces it. Nothing reaches `DOCS_DIR` until Approve.
+Library is a second page, not a panel on Ask. Upload and delete stage a JSON proposal immediately under `review/` (gitignored, so the chunker never indexes it). Edit opens the live file in the editor and does not write anything until **Save draft**, **Format**, or **Approve**. Format saves the textarea first, then calls the model. One path has one open proposal; a later submit replaces it. Nothing reaches `DOCS_DIR` until Approve. An upload while a folder pill is selected is staged at `folder/basename.md`. Approve still does not rebuild. `[[target]]` and `[[target|label]]` open a resolved note in the preview. Ambiguous stems stay text. `![[...]]` stays text.
 
 Upload runs `format_markdown` (`FORMAT_MAX_TOKENS = 4096`) through the same `complete()` Ask uses. The formatter must return one `#` title and `##` sections, with no `###`. A bad result, a truncation, or a missing model stores the raw text as a hand edit (`origin` `manual`) and keeps the error on the proposal. **Save draft** writes the textarea and does not call the model. The Format button saves that textarea first, then calls `POST /api/review/{path}/format`. A bad result returns 422 and does not replace the saved body. Upload is the path that keeps the raw file and the error message when formatting fails before a proposal exists. **Approve** writes or deletes the live file, then drops the proposal. If the live mtime no longer matches `base_mtime_ns`, Approve returns 409 and writes nothing. **Reject** drops the proposal. The lock is in front of the website. Approve remains the human gate.
 
-`list_docs` states are `indexed`, `changed` (indexed, mtime after `indexed_at`), `not_indexed`, and `missing_on_disk`. The list stays available during a rebuild. Ask, upload, delete, and review mutations return 409 while Re-index holds the lock. The service worker cache name is `ask-northwind-v15`. It precaches `/`, `/library`, and `/app.css`, and never caches `/ws` or `/api/*`. Offline Library copy is “You're offline.”
+`list_docs` states are `indexed`, `changed` (indexed, mtime after `indexed_at`), `not_indexed`, and `missing_on_disk`. The list stays available during a rebuild. Ask, upload, delete, and review mutations return 409 while Re-index holds the lock. The service worker cache name is `ask-northwind-v16`. It precaches `/`, `/library`, and `/app.css`, and never caches `/ws` or `/api/*`. Offline Library copy is “You're offline.”
 
 **Python is a fine language for this.** The embedding and FAISS ecosystem is Python-first. FastAPI’s WebSocket support is enough. The RAG core would look the same behind any other transport (SSE, gRPC, a job queue).
 
@@ -624,7 +626,7 @@ Upload runs `format_markdown` (`FORMAT_MAX_TOKENS = 4096`) through the same `com
 | `static/library.html` | Review queue, editor, file list, upload, delete, Re-index |
 | `auth.py` | Website password, session file, and throttle |
 | `sessions.json` | Session rows; gitignored |
-| `static/sw.js` | Shell cache `ask-northwind-v15` |
+| `static/sw.js` | Shell cache `ask-northwind-v16` |
 | `.env.example` | Commented sample: one provider, optional `DOCS_DIR`, optional `HOST` / `PORT`, commented `LOCK_PASSWORD`. Copy to `.env` |
 | `index/` | Built artifacts; gitignored |
 | `.venv/` | Python 3.12 environment; gitignored. 3.12 not 3.14 because FAISS / sentence-transformers wheels lag on brand-new CPython |
@@ -770,7 +772,7 @@ Sentence-transformers, FAISS, and the Anthropic/OpenAI SDKs are native here. The
 
 **“What would you add in production?”** (from the README, be honest about what you did not build)
 
-Hybrid BM25 is already in: Ask’s pool is the RRF union of the vector top 20 and the BM25 top 20 (`src/lexical.py`, `k1 = 1.5`, `b = 0.75`, RRF `k = 60`). A query with no tokens leaves that pool unchanged. Still not built: wikilinks, one-file re-index, upload-into-folder, multi-query expansion beyond the one standalone follow-up question this demo already writes, metadata filters (dept, effective date), a chunk-size sweep on eval, a larger eval from real tickets, answer-level metrics, citation verification, caching, PII / prompt-injection guardrails, and a server-side list of past chats. The browser already keeps recent threads locally.
+Hybrid BM25 is already in: Ask’s pool is the RRF union of the vector top 20 and the BM25 top 20 (`src/lexical.py`, `k1 = 1.5`, `b = 0.75`, RRF `k = 60`). A query with no tokens leaves that pool unchanged. An upload while a folder pill is selected is staged at `folder/basename.md`. Approve still does not rebuild. `[[target]]` and `[[target|label]]` open a resolved note in the preview. Ambiguous stems stay text. `![[...]]` stays text. `POST /api/reindex` with `{"paths": [...]}` embeds those files only, copies the other vectors and the other digests, refuses an empty corpus without replacing the index, and falls back to a full `build()` when the faiss row count disagrees with the pickle. The page button still rebuilds everything. Still not built: multi-query expansion beyond the one standalone follow-up question this demo already writes, metadata filters (dept, effective date), a chunk-size sweep on eval, a larger eval from real tickets, answer-level metrics, citation verification, caching, PII / prompt-injection guardrails, and a server-side list of past chats. The browser already keeps recent threads locally.
 
 **“Show me a bug in your own system.”**
 
@@ -780,11 +782,10 @@ Ungated rerank prefers IT security over equipment return for the laptop query; t
 
 ## Part 9 — What we deliberately did not build
 
-The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build. The review queue, section text in the prompt, the rerank confidence gate, the stale-index note, one-question follow-up rewrite, the website master lock, and hybrid BM25 are already in the repo. Ask’s candidate pool is the RRF union of the vector top 20 and the BM25 top 20, then the same cross-encoder and the same gate. The confident column is still the vector pool plus the gate. The table is what is still out. Wikilinks, one-file re-index, and upload-into-folder are not built.
+The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build. The review queue, section text in the prompt, the rerank confidence gate, the stale-index note, one-question follow-up rewrite, the website master lock, hybrid BM25, folder upload, preview wikilinks, and one-file re-index are already in the repo. Ask’s candidate pool is the RRF union of the vector top 20 and the BM25 top 20, then the same cross-encoder and the same gate. The confident column is still the vector pool plus the gate. An upload while a folder pill is selected is staged at `folder/basename.md`. Approve still does not rebuild. `[[target]]` and `[[target|label]]` open a resolved note in the preview. Ambiguous stems stay text. `![[...]]` stays text. `POST /api/reindex` with `{"paths": [...]}` embeds those files only, copies the other vectors and the other digests, refuses an empty corpus without replacing the index, and falls back to a full `build()` when the faiss row count disagrees with the pickle. The page button still rebuilds everything. The table is what is still out.
 
 | Not built | Why it exists in real systems | Why it’s omitted here |
 |-----------|-------------------------------|------------------------|
-| Wikilinks, one-file re-index, upload-into-folder | A nested notes vault you can click through and refresh one file at a time | Upload is still a basename at the corpus root. Re-index still embeds every file. `[[links]]` stay text |
 | Multi-query expansion and a chat log | Several searches per turn, and a sidebar of old threads | One standalone rewrite is visible on the turn. The thread is this tab only |
 | Metadata filters | Don’t retrieve an obsolete policy version | One version of each doc |
 | LangChain / LiteLLM | Faster to scaffold / one model string for 100 vendors | Hides stages; we kept two HTTP shapes visible |
