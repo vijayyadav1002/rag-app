@@ -263,13 +263,26 @@
     }
 
     function linkifyWikilinks(escaped) {
-      return escaped.replace(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g, (match, target, alias, offset, source) => {
-        if (offset > 0 && source[offset - 1] === "!") return match;
-        const path = resolveWikilink(unescapeHtml(target), wikilinkNames());
-        if (!path) return match;
+      // Match raw text. escapeHtml writes ' as &#39;, and that # would end the target.
+      const raw = unescapeHtml(escaped);
+      const re = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
+      let out = "";
+      let last = 0;
+      let match;
+      while ((match = re.exec(raw))) {
+        const offset = match.index;
+        const embed = offset > 0 && raw[offset - 1] === "!";
+        const target = match[1];
+        const alias = match[2];
+        const path = embed ? null : resolveWikilink(target, wikilinkNames());
+        if (!path) continue;
+        out += escapeHtml(raw.slice(last, offset));
         const label = alias != null ? alias : target;
-        return `<button type="button" class="wikilink" data-path="${escapeHtml(path)}">${label}</button>`;
-      });
+        out += `<button type="button" class="wikilink" data-path="${escapeHtml(path)}">${escapeHtml(label)}</button>`;
+        last = offset + match[0].length;
+      }
+      out += escapeHtml(raw.slice(last));
+      return out;
     }
 
     function renderInline(text) {
