@@ -785,13 +785,14 @@
         if (refresh) loadVault();
         return;
       }
+      const refresh = indexNote.hidden;
       indexNote.hidden = false;
       indexNote.append("The library has changed since the last Re-index. Answers still use the previous index. ");
       const link = document.createElement("a");
       link.href = "/library";
       link.textContent = "Re-index on the Library page.";
       indexNote.append(link);
-      loadVault();
+      if (refresh) loadVault();
     }
 
     function setRebuildLock(locked) {
@@ -1427,6 +1428,7 @@
     function askAboutFile() {
       if (!previewName) return;
       pinFile(previewName);
+      loadSuggestions();
       if (previewDialog.open) previewDialog.close();
       input.focus();
     }

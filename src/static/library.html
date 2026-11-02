@@ -237,6 +237,7 @@
     let renameFrom = "";
     let phraseTimer = null;
     let sessionGen = 0;
+    let previewGen = 0;
     let lastDocs = [];
     let lastChunkTotal = null;
     let folder = "all";
@@ -579,6 +580,7 @@
     }
 
     async function openPreview(name) {
+      const gen = ++previewGen;
       const doc = lastDocs.find((item) => item.name === name);
       previewTitle.textContent = name;
       const bits = [];
@@ -601,8 +603,10 @@
       }
       try {
         const res = await fetch("/api/docs/" + encPath(name));
+        if (gen !== previewGen) return;
         if (sessionEnded(res)) { previewDialog.close(); return; }
         const body = await res.json().catch(() => ({}));
+        if (gen !== previewGen) return;
         if (res.status === 404) {
           previewBody.textContent = "This file is no longer in the library.";
           previewEdit.hidden = true;
@@ -615,6 +619,7 @@
         previewBody.innerHTML = renderMarkdown(body.body || "");
         setPreviewAsks(name, typeof body.body === "string" ? body.body : "");
       } catch (err) {
+        if (gen !== previewGen) return;
         previewBody.textContent = OFFLINE_MSG;
       }
     }
