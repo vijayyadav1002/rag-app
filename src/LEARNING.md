@@ -20,7 +20,7 @@ Commands are always run from `src/`.
 
 ## The 30-second answer
 
-> This is a retrieval-augmented generation system over a fake company’s HR and IT docs. We do **not** dump the whole handbook into the model. At index time we split docs into chunks, embed each chunk with Nomic (`search_document:` + text), and store those vectors. At question time we embed the question with the same model (`search_query:` + question), find the nearest chunks, rerank them, and only then ask an LLM (Claude, Ollama, OpenAI-compatible, …) to answer **using those excerpts**, with citations. If the excerpts don’t contain the answer, the prompt forbids guessing. Retrieval is always local. Only the last step talks to a provider.
+> This is a retrieval-augmented generation system over a fake company’s HR and IT docs. We do **not** dump the whole handbook into the model. At index time we split docs into chunks, embed each chunk with Nomic (`search_document:` + text), and store those vectors. At question time we embed the question with the same model (`search_query:` + question), union the nearest chunks with a BM25 list, rerank that pool, and only then ask an LLM (Claude, Ollama, OpenAI-compatible, …) to answer **using those excerpts**, with citations. If the excerpts don’t contain the answer, the prompt forbids guessing. Retrieval is always local. Only the last step talks to a provider.
 
 That paragraph is the whole architecture. Everything else is how those steps are implemented here, and why each step exists.
 
@@ -41,11 +41,11 @@ This app does that in two clocks:
 
 **Online (every question)**
 
-3. `retrieve.py` embeds the question with the **same** Nomic model, but prefixed `search_query: ` (not `search_document: `). It asks FAISS for the 20 nearest chunks, then a **cross-encoder** reranker (still MiniLM) scores those 20 as (question, chunk) pairs. If the best score is at least 0, that order is what ships. If the best score is negative, vector order ships instead, and the scores stay attached. Either way the next step sees the top 4.
+3. `retrieve.py` embeds the question with the **same** Nomic model, but prefixed `search_query: ` (not `search_document: `). It asks FAISS for the 20 nearest chunks. Ask’s candidate pool is the RRF union of that list and the BM25 top 20 from `src/lexical.py` (`k1 = 1.5`, `b = 0.75`; tokens are `[a-z0-9]+` after lowercasing; RRF `k = 60`). `answer` and `answer_stream` pass `hybrid=True`. A query with no tokens leaves the pool unchanged. A **cross-encoder** reranker (still MiniLM) then scores that pool. If the best score is at least 0, that order is what ships. If the best score is negative, vector order of that pool ships instead, and the scores stay attached. Either way the next step sees the top 4. The confident eval column is still the vector pool plus that same gate.
 4. `generate.py` may widen a hit before the prompt is built. A chunk whose rerank score is at least 0 and within 1.0 of the best score in that list is replaced by its `##` section (the heading plus up to 4,000 characters of body). On the 11 shipped files every section already fits in the 800-character window, so the prompt text matches the chunk until a longer document is indexed. The prompt then says: answer ONLY from these numbered excerpts; cite `[1]`; if it’s not there, say you don’t know. A follow-up is not embedded as typed. It is rewritten into one standalone search question first. The earlier turns go into the answer prompt, not into the vector. `llm.py` sends the prompt to whatever you configured (Claude, Ollama, OpenAI-compatible, …).
 5. `cli.py` prints the answer and whether the reranker ordered the sources. `server.py` + `static/index.html` stream the same pipeline over a WebSocket so you can watch retrieve → sources → tokens. The browser keeps threads in `localStorage`. A library edit reaches search only after Approve and then Re-index.
 
-**Eval is retrieval, not answer grading.** `eval.py` has 20 hand-labeled `(question, source file)` pairs. The metric is recall@k: did the right *document* appear in the top-k chunks? Vector search and ungated rerank each miss a different question at rank 1 (95%) and both hit at 3 and 5 (100%). The shipped confidence gate is 100% at 1, 3, and 5 on this set. The disagreement is the interesting part; it is in Part 7.
+**Eval is retrieval, not answer grading.** `eval.py` has 20 hand-labeled `(question, source file)` pairs. The metric is recall@k: did the right *document* appear in the top-k chunks? At rank 1 the four columns are 95% vector, 95% ungated rerank, 100% confident, and 100% hybrid. All four are 100% at 3 and at 5. The confident column is still the vector pool plus the gate, so the laptop-return miss stays visible in the ungated column. Vector still misses the new-hire health-enrollment question. Hybrid misses none. The disagreement is the interesting part; it is in Part 7.
 
 We did **not** use LangChain or LlamaIndex. Each stage is a flat Python file you can read.
 
@@ -106,7 +106,7 @@ If you **L2-normalize** a vector, you shrink it to length 1. Then cosine similar
 
 **Bi-encoder** (the embedding model): encode the document once at index time, encode the query once at search time, compare with a dot product. Fast. Cannot see “the query and this paragraph *together*.”
 
-**Cross-encoder** (the reranker): take the query *and* one candidate chunk as a single input, output one relevance score. Sees interactions the bi-encoder misses (e.g. “laptop return on exit” vs “encrypt company laptops”). Too slow to run on the whole corpus. So we run it only on the top 20.
+**Cross-encoder** (the reranker): take the query *and* one candidate chunk as a single input, output one relevance score. Sees interactions the bi-encoder misses (e.g. “laptop return on exit” vs “encrypt company laptops”). Too slow to run on the whole corpus. So we run it only on a small pool: the vector top 20 for the confident column, or, for Ask, the RRF union of that list and the BM25 top 20.
 
 This two-stage pattern is called **retrieve-then-rerank**. It is the standard accuracy lever in production RAG.
 
@@ -167,7 +167,9 @@ question  (a follow-up is rewritten into one standalone question first)
    │  retrieve.py
    │     Nomic embed query (`search_query:`)
    │     FAISS top 20
-   │     MiniLM cross-encoder; rerank order only if best logit ≥ 0, else vector order → top 4
+   │     BM25 top 20 (src/lexical.py, k1 = 1.5, b = 0.75)
+   │     Ask: RRF union (k = 60); a tokenless query leaves the pool unchanged
+   │     MiniLM cross-encoder; rerank order only if best logit ≥ 0, else vector order of that pool → top 4
    │     prompt_excerpts: a strong hit may become its ## section
    ▼
 RetrievedChunk × up to 4
@@ -404,13 +406,15 @@ Default 20 is the **candidate pool**, not the final context. We over-retrieve be
 
 Trained on **MS MARCO**, a dataset of Bing-style search queries and relevant passages. It is a relevance model, not a chatbot. We use it as a second opinion on “does this paragraph answer this question?”
 
-**`retrieve(..., top_k=4, candidate_pool=20, use_reranker=True, trust_gate=True)`**
+**`retrieve(..., top_k=4, candidate_pool=20, use_reranker=True, trust_gate=True, hybrid=False)`**
 
-The function generation actually calls. After rerank, if the best logit is below `RERANK_TRUST` (`0.0`), the same 20 candidates are sorted back into vector order. `trust_gate=False` is the ungated column in `eval.py`.
+Default `hybrid=False` is the confident column: the vector pool plus the gate. After rerank, if the best logit is below `RERANK_TRUST` (`0.0`), those candidates are sorted back into vector order. `trust_gate=False` is the ungated column in `eval.py`. The laptop-return miss stays visible there.
+
+**Ask’s pool.** `answer` and `answer_stream` do not call that default. They call `retrieve_explained(..., hybrid=True)`. The candidate pool is the RRF union of the vector top 20 and the BM25 top 20, capped at 20, then the same cross-encoder and the same gate. `src/lexical.py` scores Okapi BM25 with `k1 = 1.5` and `b = 0.75`. Tokens are `[a-z0-9]+` after lowercasing. `fuse_rrf` uses RRF `k = 60`. A query with no tokens leaves the pool unchanged (no lexical hits, so the list stays the vector hits). `cli.py` calls `answer`, so it searches that same fused pool.
 
 **`prompt_excerpts(chunks)`**
 
-Called from `answer` and `answer_stream` after `retrieve`, not from `eval.py`. Ranking already used the 800-character window. This only changes what the prompt may read.
+Called from `answer` and `answer_stream` after `retrieve_explained`, not from `eval.py`. Ranking already used the 800-character window. This only changes what the prompt may read.
 
 The best logit is `max` of the scores on the **returned** chunks. A hit expands when that score is at least `RERANK_FLOOR` (`0.0`), at least `best - RERANK_MARGIN` (`1.0`), and `section_text` is non-empty. `text` is replaced with `section_text` and `expanded` becomes true. Chunks with no rerank score are returned unchanged.
 
@@ -422,7 +426,7 @@ Two returned windows with the same `source_file` and `heading` collapse to one e
 
 This MiniLM was trained on MS MARCO as a relevance classifier. The raw score is a logit: `sigmoid(0) = 0.5`. Below 0 the model is saying “probably not a relevant passage.” Reordering on that opinion is how the laptop query flips to the encryption policy. The gate refuses that reorder. It does not delete the chunks, and it does not blend the two scores into a third number.
 
-**`python retrieve.py "your query"`** — prints vector-only top 4, ungated rerank top 4, and the shipped order, with scores. This is how you debug a bad answer *before* blaming the LLM. If the right file is missing here, generation cannot save you.
+**`python retrieve.py "your query"`** — prints vector-only top 4, ungated rerank top 4, the confident order (vector pool plus the gate), and a hybrid block, with scores. This is how you debug a bad answer *before* blaming the LLM. If the right file is missing from the hybrid block, generation cannot save you: that is the pool Ask searches.
 
 **Why rerank is not “always better” in this repo**
 
@@ -555,11 +559,11 @@ It is intentionally tiny. If the CLI and the UI ever disagreed, retrieval/genera
 
 For each question, retrieve `max_k` (5) chunks. For each k in (1, 3, 5), if `expected_source` is in the first k filenames, count a hit. Divide by 20. Also record questions that miss at k=1.
 
-Vector-only uses `vector_search(top_k=max_k)`. Rerank order calls `retrieve(..., trust_gate=False)`. Confident calls `retrieve(..., trust_gate=True)`, which is what Ask and the CLI use.
+Vector-only uses `vector_search(top_k=max_k)`. Rerank order calls `retrieve(..., trust_gate=False)`. Confident calls `retrieve(..., trust_gate=True)` with `hybrid` left false, so it is still the vector pool plus the gate. Hybrid calls `retrieve(..., hybrid=True, trust_gate=True)`, which is what Ask and the CLI use.
 
 **What the numbers mean on *this* corpus**
 
-README reports 95% @1 for vector search and for ungated rerank, 100% @1 for the shipped gate, and 100% @3/@5 for all three. 19/20 for each ungated method. 20/20 once the gate picks which list to trust.
+README reports 95% / 95% / 100% / 100% at k=1 for vector, ungated rerank, confident, and hybrid, and 100% at k=3 and k=5 for all four. 19/20 for each ungated method. 20/20 for the confident column and for hybrid. Vector still misses “When do I need to enroll in health insurance as a new hire?” Ungated rerank still misses “What happens if I don't return my laptop when I leave the company?” Confident misses none. Hybrid misses none. The laptop-return miss stays visible in the ungated column because the confident column does not switch to the fused pool.
 
 That is not “RAG is solved.” It is “a small, topically distinct handbook is easy, and one bad reorder was an unconfident logit.” A real wiki has overlapping policies, old versions, and slang queries. Eval would get harder.
 
@@ -588,7 +592,7 @@ One page: a thread of turns, a composer stuck to the bottom, connection state be
 
 - Sends `{ "question", "history" }`. `history` is the committed questions and answers already on screen. The first question sends an empty list.
 - A follow-up first shows “Reading the conversation…”. `generate.py` rewrites that follow-up into one standalone search question, then retrieves with that string. The answer prompt still contains the recent turns (8 messages, 1,500 characters each, 6,000 total). The page keeps showing the whole thread. Citation numbers apply only to this turn’s excerpts. If the rewrite fails, search uses the previous user question plus the new one, capped at 400 characters.
-- On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). Retrieved context starts collapsed. The meta line is the file, `section` or `excerpt`, the heading, and `score` plus the logit when the reranker produced one. The header says “Ordered by the reranker.” or “Vector order — reranker scores were below 0.” A turn can show “How this was retrieved” (the best logit, vector briefs, and rerank briefs). A source badge reads “Changed since Re-index”, “Not in the index”, or “Missing from the library”. A rewritten search is labeled `Follow-up searched as: …`. The file name opens that markdown read-only.
+- On `sources`, the turn builds numbered cards with `textContent` (no HTML injection from docs). Retrieved context starts collapsed. The meta line is the file, `section` or `excerpt`, the heading, and `score` plus the logit when the reranker produced one. The header says “Ordered by the reranker.” or “Vector order — reranker scores were below 0.” A turn can show “How this was retrieved” (the best logit, vector briefs, rerank briefs, and lexical briefs labeled “Lexical matches” when BM25 returned hits). A source badge reads “Changed since Re-index”, “Not in the index”, or “Missing from the library”. A rewritten search is labeled `Follow-up searched as: …`. The file name opens that markdown read-only.
 - An empty thread lists up to five `##` headings and does not send them. Library’s Ask link and heading links fill Search in and the draft. They do not send. `GET /api/docs?suggest=` returns `suggestions`. A bad `suggest` is HTTP 400.
 - On `token`, appends to that turn’s Markdown buffer and re-renders it as HTML (headings, lists, bold, code, tables). HTML in the model output is escaped; `[n]` citations stay visible. Answer headings use `text-transform: none` so they do not inherit the panel label style.
 - Threads live in `localStorage` (`ask-northwind-threads`) so a reload keeps the active conversation and the recent list. **New chat** starts another thread and leaves the previous one in that list. The server stores nothing. Logout does not clear the threads. An older tab session under `ask-northwind-chat` is imported once.
@@ -624,7 +628,8 @@ Upload runs `format_markdown` (`FORMAT_MAX_TOKENS = 4096`) through the same `com
 | `.env.example` | Commented sample: one provider, optional `DOCS_DIR`, optional `HOST` / `PORT`, commented `LOCK_PASSWORD`. Copy to `.env` |
 | `index/` | Built artifacts; gitignored |
 | `.venv/` | Python 3.12 environment; gitignored. 3.12 not 3.14 because FAISS / sentence-transformers wheels lag on brand-new CPython |
-| `README.md` | Operator’s manual + the eval story + production talking points we did not implement |
+| `lexical.py` | Okapi BM25 over chunk text; `k1 = 1.5`, `b = 0.75`; tokens `[a-z0-9]+` |
+| `README.md` | Operator’s manual + the four-column eval story + production talking points we did not implement |
 
 ---
 
@@ -637,6 +642,8 @@ Interviewers love “why 4, not 5?” The honest answer is: **defaults that are 
 | `CHUNK_SIZE` | 800 chars | More context per hit; mushier embeddings; fewer chunks | Sharper topic per vector; more risk of incomplete facts |
 | `CHUNK_OVERLAP` | 150 chars | Boundary sentences survive; more duplicate vectors | Cheaper index; more split facts |
 | `candidate_pool` | 20 | Reranker sees more; slower; more chance the true hit is in the pool | Faster; more risk the true hit never reaches rerank |
+| BM25 `k1` / `b` | 1.5 / 0.75 in `src/lexical.py` | Higher `k1` lets a repeated token count more; higher `b` penalizes a long chunk more | Lower `k1` saturates term frequency sooner; lower `b` treats a long chunk more like a short one |
+| RRF `k` | 60 | A larger `k` flattens rank differences in the union | A smaller `k` lets the first hit dominate the union |
 | `top_k` to the LLM | 4 | More evidence; more prompt noise, cost, and distraction | Cheaper, cleaner; may drop a needed section |
 | `max_tokens` | 500 for answers, 80 for a follow-up rewrite, 4096 for Library formatting | Longer answers or a longer rewrite | Truncated answers; a truncated format is rejected |
 | `RERANK_TRUST` | 0.0 | Rerank order ships on a weaker logit | More questions stay in vector order, including real rerank wins |
@@ -663,7 +670,7 @@ If the right chunk is not in the top 4, the model cannot cite it. It may say “
 Query: *“What happens if I don't return my laptop when I leave the company?”*
 
 - Vector search: `remote_work_equipment_policy.md` (correct — return/equipment).
-- Ungated rerank: `it_security_policy.md`, because that doc talks about **company laptops** (disk encryption). The best logit is about -6. `sigmoid(-6)` is nearly 0, so the model does not believe its own top hit. Shipped `retrieve()` keeps the vector order.
+- Ungated rerank: `it_security_policy.md`, because that doc talks about **company laptops** (disk encryption). The best logit is about -6. `sigmoid(-6)` is nearly 0, so the model does not believe its own top hit. The confident column keeps vector order of the vector pool. That miss stays in the ungated column.
 
 A *different* query is a real rerank win, and the gate keeps it:
 
@@ -671,7 +678,7 @@ A *different* query is a real rerank win, and the gate keeps it:
 - Vector search: `onboarding_guide.md` (mentions enrollment in passing).
 - Rerank: `benefits_enrollment_guide.md` (correct), best logit about +0.35. That is above 0, so the shipped order is the rerank order.
 
-**Ungated, the @1 number does not move; the mistakes swap.** The gate is how the shipped path uses that fact without throwing the reranker away. `eval.py` still prints both misses. Run `python retrieve.py` on the laptop question and you will see the ungated flip and the shipped vector order in one printout. Ask shows the equipment policy and the line “Reranker scores were below 0, so these stay in vector-search order.” It does not retrieve the IT-security chunk as the top hit. Because that best logit is below 0, the laptop prompt also keeps the 800-character windows.
+**Ungated, the @1 number does not move; the mistakes swap.** The gate is how the confident column uses that fact without throwing the reranker away. `eval.py` still prints both ungated misses. Run `python retrieve.py` on the laptop question and you will see the ungated flip and the confident vector order in one printout. Ask does not use that column. Its pool is the RRF union, then the same gate. On this question that fused pool also puts `remote_work_equipment_policy.md` first and restores vector order, because the best logit is still below 0. The UI line is “Vector order — reranker scores were below 0.” It does not retrieve the IT-security chunk as the top hit. Because that best logit is below 0, the laptop prompt also keeps the 800-character windows. Hybrid misses none on the 20-question set.
 
 ### 3. Right doc, wrong sentence
 
@@ -711,7 +718,7 @@ Retrieval-augmented generation: fetch relevant pieces of a knowledge base, put t
 
 **“Walk me through your pipeline.”**
 
-Markdown → heading-aware chunks with overlap and a title prefix → Nomic v1.5 embeddings (`search_document:` / `search_query:`), L2-normalized → FAISS IndexFlatIP → query embed → top 20 → MiniLM cross-encoder rerank → keep that order only if the best logit is ≥ 0, else vector order → top 4 → a strong hit may become its `##` section → grounded system prompt and `[n]` citations. A follow-up is rewritten into one search question first; the recent turns stay in the answer prompt. Library edits wait for Approve, then Re-index. `llm.py` is Anthropic or OpenAI-compatible. The UI is one browser-tab thread. Eval is recall@k on 20 labeled questions, retrieval only, three columns, and it does not expand sections.
+Markdown → heading-aware chunks with overlap and a title prefix → Nomic v1.5 embeddings (`search_document:` / `search_query:`), L2-normalized → FAISS IndexFlatIP → query embed → vector top 20 union BM25 top 20 (`src/lexical.py`, `k1 = 1.5`, `b = 0.75`, RRF `k = 60`; a tokenless query leaves the pool unchanged) → MiniLM cross-encoder rerank → keep that order only if the best logit is ≥ 0, else vector order of that pool → top 4 → a strong hit may become its `##` section → grounded system prompt and `[n]` citations. A follow-up is rewritten into one search question first; the recent turns stay in the answer prompt. Library edits wait for Approve, then Re-index. `llm.py` is Anthropic or OpenAI-compatible. The UI is one browser-tab thread. Eval is recall@k on 20 labeled questions, retrieval only, four columns (95% / 95% / 100% / 100% at rank 1), and it does not expand sections. The confident column is still the vector pool plus the gate.
 
 **“Why not just use a bigger context window?”**
 
@@ -727,7 +734,7 @@ Overlap: facts on a cut appear in two windows. Headings: don’t split a section
 
 **“Bi-encoder vs cross-encoder?”**
 
-Bi-encoder embeds query and doc separately — fast, indexable. Ours is Nomic v1.5 (768-D, asymmetric prefixes). Cross-encoder reads both together — a second opinion, too slow for the full corpus. Ours is MiniLM trained on MS MARCO. Retrieve 20 with the first, score them with the second, and ship the rerank order only when the best logit is at least 0.
+Bi-encoder embeds query and doc separately — fast, indexable. Ours is Nomic v1.5 (768-D, asymmetric prefixes). Cross-encoder reads both together — a second opinion, too slow for the full corpus. Ours is MiniLM trained on MS MARCO. Ask unions the vector top 20 with the BM25 top 20, scores that pool with the cross-encoder, and ships the rerank order only when the best logit is at least 0.
 
 **“Why `search_document:` and `search_query:`?”**
 
@@ -739,7 +746,7 @@ Two HTTP shapes, not a catalog. Anthropic Messages vs OpenAI Chat Completions. `
 
 **“Is rerank always better?”**
 
-No. Ungated, the @1 rate on this set is the same 95% and the *errors* change: laptop-return flips to IT security (logit about -6), benefits enrollment is a real win (logit about +0.35). The shipped gate keeps rerank order only at or above 0, which is 20/20 here. I would not ship a reranker change without an eval set.
+No. Ungated, the @1 rate on this set is the same 95% and the *errors* change: laptop-return flips to IT security (logit about -6), benefits enrollment is a real win (logit about +0.35). The confident column is still the vector pool plus the gate, which is 20/20 here, and the laptop-return miss stays in the ungated column. Ask’s hybrid column is also 20/20. I would not ship a reranker change without an eval set.
 
 **“How do you know it works?”**
 
@@ -761,9 +768,9 @@ Exact inner product. After L2 normalization that *is* cosine. Exact search is fi
 
 Sentence-transformers, FAISS, and the Anthropic/OpenAI SDKs are native here. The WebSocket layer is a thin FastAPI pipe. I would not reimplement the embedder in another language to learn RAG.
 
-**“What would you add in production?”** (from the README, be honest you did not build them)
+**“What would you add in production?”** (from the README, be honest about what you did not build)
 
-Hybrid BM25 + vectors (exact tokens: error codes, SKUs). Multi-query expansion beyond the one standalone follow-up question this demo already writes. Metadata filters (dept, effective date). Chunk-size sweep on eval. Larger eval from real tickets. Answer-level metrics. Citation verification. Caching. PII / prompt-injection guardrails. A server-side list of past chats. The browser already keeps recent threads locally.
+Hybrid BM25 is already in: Ask’s pool is the RRF union of the vector top 20 and the BM25 top 20 (`src/lexical.py`, `k1 = 1.5`, `b = 0.75`, RRF `k = 60`). A query with no tokens leaves that pool unchanged. Still not built: wikilinks, one-file re-index, upload-into-folder, multi-query expansion beyond the one standalone follow-up question this demo already writes, metadata filters (dept, effective date), a chunk-size sweep on eval, a larger eval from real tickets, answer-level metrics, citation verification, caching, PII / prompt-injection guardrails, and a server-side list of past chats. The browser already keeps recent threads locally.
 
 **“Show me a bug in your own system.”**
 
@@ -773,18 +780,18 @@ Ungated rerank prefers IT security over equipment return for the laptop query; t
 
 ## Part 9 — What we deliberately did not build
 
-The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build. The review queue, section text in the prompt, the rerank confidence gate, the stale-index note, one-question follow-up rewrite, and the website master lock are already in the repo. The table is what is still out.
+The README’s “production version” list is not a backlog we forgot. It is the boundary of a learning build. The review queue, section text in the prompt, the rerank confidence gate, the stale-index note, one-question follow-up rewrite, the website master lock, and hybrid BM25 are already in the repo. Ask’s candidate pool is the RRF union of the vector top 20 and the BM25 top 20, then the same cross-encoder and the same gate. The confident column is still the vector pool plus the gate. The table is what is still out. Wikilinks, one-file re-index, and upload-into-folder are not built.
 
 | Not built | Why it exists in real systems | Why it’s omitted here |
 |-----------|-------------------------------|------------------------|
-| Hybrid BM25 | Embeddings miss exact codes (`E3`) | Corpus is prose; would hide the vector story |
+| Wikilinks, one-file re-index, upload-into-folder | A nested notes vault you can click through and refresh one file at a time | Upload is still a basename at the corpus root. Re-index still embeds every file. `[[links]]` stay text |
 | Multi-query expansion and a chat log | Several searches per turn, and a sidebar of old threads | One standalone rewrite is visible on the turn. The thread is this tab only |
 | Metadata filters | Don’t retrieve an obsolete policy version | One version of each doc |
 | LangChain / LiteLLM | Faster to scaffold / one model string for 100 vendors | Hides stages; we kept two HTTP shapes visible |
 | Answer grading / RAGAS | Know if the *sentence* is right | Would call an LLM from eval and mix failure modes |
 | Per-user accounts, multi-user identity, deploy | Product concerns | The website master lock is in. One local process stays true (the socket registry is in-process) |
 
-If you implement those later, keep `chunk.py` / `retrieve.py` / `generate.py` / `llm.py` as the brain. New ideas should be new stages you can turn off in `eval.py`.
+If you implement those later, keep `chunk.py` / `lexical.py` / `retrieve.py` / `generate.py` / `llm.py` as the brain. New ideas should be new stages you can turn off in `eval.py`.
 
 ---
 
@@ -794,7 +801,7 @@ If you implement those later, keep `chunk.py` / `retrieve.py` / `generate.py` / 
 2. Run `python retrieve.py "How many PTO days do I get per year?"` and show vector vs rerank lists.
 3. Run `python llm.py` to show which provider resolved, then `python cli.py "How many PTO days do I get per year?"` and show `[1]` next to `pto_policy.md`.
 4. In the UI, ask the same question and expand **Retrieved context** — “this is retrieval; the model has not written yet.” Ask “what about contractors?” next and show the standalone search line, then New chat. The first thread stays in Recent conversations.
-5. Ask the laptop-return question in the UI. The excerpts should stay on the equipment policy, with the note that the reranker was below 0. Then run `python retrieve.py` on that question and show the ungated flip to IT security: “this is why the gate exists, and why eval still prints the ungated column.”
-6. Run `python eval.py` and say the three columns: 95% / 95% / 100% at rank 1, and 100% at 3. Name the two ungated misses.
+5. Ask the laptop-return question in the UI. The excerpts should stay on the equipment policy, with the note that the reranker was below 0. Then run `python retrieve.py` on that question and show the ungated flip to IT security beside the confident block, which is still the vector pool plus the gate: “this is why eval still prints the ungated column.” The hybrid block is the pool Ask searched.
+6. Run `python eval.py` and say the four columns: 95% / 95% / 100% / 100% at rank 1, and 100% at 3 and at 5. Name the two ungated misses. Confident misses none. Hybrid misses none.
 
 If you can do those six steps without notes, you can explain this application to anyone.

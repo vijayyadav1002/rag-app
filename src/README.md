@@ -17,8 +17,9 @@ index/                  — persisted vectors + metadata
    │
    │  query
    ▼
-retrieve.py             — vector search (top-20) → cross-encoder rerank;
-                          keep that order only when the best logit is ≥ 0
+retrieve.py             — Ask: RRF union of vector top 20 and BM25 top 20,
+                          then cross-encoder rerank; keep that order only
+                          when the best logit is ≥ 0
    ▼
 generate.py             — a follow-up becomes one standalone search question;
                           a strong hit may include its ## section;
@@ -58,7 +59,7 @@ cp .env.example .env
 
 ## LLM providers
 
-Retrieval (Nomic + FAISS + rerank) always runs on your machine. Only the
+Retrieval (Nomic + FAISS + BM25 + rerank) always runs on your machine. Only the
 final write-the-answer step calls an LLM. `llm.py` supports two HTTP
 shapes: Anthropic Messages, and OpenAI Chat Completions (used by Ollama,
 LM Studio, vLLM, Groq, OpenRouter, xAI, OpenAI itself).
@@ -118,6 +119,15 @@ That is a model limit; the prompt is the same.
    still replaces vector order. That is the standard retrieve-then-rerank
    pattern, plus the refusal to let an unconfident reorder win.
 
+   Ask does not rerank the vector top 20 alone. `answer` and
+   `answer_stream` pass `hybrid=True`, and `cli.py` calls `answer`, so
+   both search the same pool: the reciprocal-rank-fusion union of the
+   vector top 20 and the BM25 top 20, capped at 20, then that same
+   cross-encoder and the same gate. BM25 lives in `src/lexical.py` (`k1 = 1.5`, `b = 0.75`).
+   Tokens are `[a-z0-9]+` after lowercasing. RRF `k = 60`. A query with
+   no tokens leaves the pool unchanged. The confident column below is
+   still the vector pool plus the gate.
+
 3. **Grounded generation with forced citations** (`generate.py`). The
    prompt requires every claim to cite a source chunk number and
    explicitly instructs the model to say it doesn't know rather than fall
@@ -135,11 +145,11 @@ That is a model limit; the prompt is the same.
 
    Result on this corpus:
 
-   | k | vector search only | rerank order (gate off) | shipped (confident rerank) |
-   |---|---------------------|--------------------------|----------------------------|
-   | 1 | 95% | 95% | 100% |
-   | 3 | 100% | 100% | 100% |
-   | 5 | 100% | 100% | 100% |
+   | k | vector search only | rerank order (gate off) | confident (vector pool + gate) | hybrid (Ask) |
+   |---|---------------------|--------------------------|--------------------------------|--------------|
+   | 1 | 95% | 95% | 100% | 100% |
+   | 3 | 100% | 100% | 100% | 100% |
+   | 5 | 100% | 100% | 100% | 100% |
 
    **Why ungated rerank does not move the headline number, and why the
    gate does:** this corpus is small (11 policy docs, plus whatever else
@@ -151,8 +161,8 @@ That is a model limit; the prompt is the same.
      → vector search gets it right (`remote_work_equipment_policy.md`);
      ungated rerank flips it to `it_security_policy.md`, which mentions
      "company laptops" in a different context (disk encryption). The best
-     logit on that question is about -6, so the shipped gate keeps the
-     vector order.
+     logit on that question is about -6, so the confident column keeps
+     the vector order. That miss stays in the ungated column.
    - "When do I need to enroll in health insurance as a new hire?" →
      vector search gets it wrong (`onboarding_guide.md`, which mentions
      benefits enrollment only in passing); rerank correctly picks
@@ -161,10 +171,15 @@ That is a model limit; the prompt is the same.
 
    Ungated, the aggregate @1 number does not move. The gate picks the
    list whose model is willing to stand behind its top hit, and on this
-   set that is 20/20 at rank 1. `eval.py` still prints the ungated misses
-   so a single anecdote cannot hide the disagreement. Fail a retrieval
-   change if recall at 3 drops below 100%, or if the shipped column drops
-   below 100% at rank 1 on this set.
+   set the confident column is 20/20 at rank 1. The confident column is
+   still the vector pool plus the gate, so the laptop-return miss stays
+   visible in the ungated column. Vector still misses the new-hire
+   enrollment question. Hybrid misses none: Ask’s candidate pool is the
+   RRF union of the vector top 20 and the BM25 top 20, then the same
+   cross-encoder and the same gate. `eval.py` still prints the ungated
+   misses so a single anecdote cannot hide the disagreement. Fail a
+   retrieval change if recall at 3 drops below 100% in any column, or if
+   the confident column drops below 100% at rank 1 on this set.
 
 5. **The prompt can see the section, the index still stores the window**
    (`prompt_excerpts` in `retrieve.py`, called from `generate.py`). After
@@ -191,12 +206,11 @@ That is a model limit; the prompt is the same.
 
 These are deliberately **not** implemented here — this is a 3-day learning
 build, not a shipped system — but they're the right next steps and worth
-being able to discuss:
+being able to discuss. Hybrid BM25 is the exception: Ask already searches
+the fused pool above (`src/lexical.py`, `k1 = 1.5`, `b = 0.75`, RRF
+`k = 60`). Wikilinks, one-file re-index, and upload-into-folder are still
+not built, along with every item below.
 
-- **Hybrid search**: combine dense vector search with sparse lexical
-  search (BM25) and fuse the results (e.g. Reciprocal Rank Fusion). Dense
-  retrieval is weak on exact terms — product codes, error codes like
-  "E3", proper nouns — that BM25 catches directly.
 - **Multi-query expansion**: Ask already rewrites one follow-up into a
   single standalone search question. A production system often searches
   several phrasings, or a hypothetical answer, and fuses those lists.
@@ -233,11 +247,12 @@ being able to discuss:
 | `docs/` | Default corpus (`DOCS_DIR`); synthetic Northwind markdown |
 | `chunk.py` | Heading-aware chunking with overlap |
 | `build_index.py` | Embed chunks, atomically persist the FAISS index (`files` / `indexed_at`) |
-| `retrieve.py` | Vector search + cross-encoder rerank; keep rerank order only when the best logit is ≥ 0; expand a strong hit to its `##` section after ranking; `reload()` hot-swaps FAISS |
-| `generate.py` | Prompt assembly + citations; follow-ups become one standalone search question; recent turns stay in the answer prompt (`answer_stream` for the UI) |
+| `lexical.py` | Okapi BM25 (`k1 = 1.5`, `b = 0.75`); tokens are `[a-z0-9]+` after lowercasing |
+| `retrieve.py` | Vector search + BM25; Ask fuses them with RRF `k = 60`, then the cross-encoder and the same gate; expand a strong hit to its `##` section after ranking; `reload()` hot-swaps FAISS and the BM25 index |
+| `generate.py` | Prompt assembly + citations; `answer` and `answer_stream` pass `hybrid=True`; follow-ups become one standalone search question; recent turns stay in the answer prompt (`answer_stream` for the UI) |
 | `llm.py` | Anthropic or OpenAI-compatible generation (`complete` / `stream`) |
-| `cli.py` | Command-line entrypoint |
-| `eval.py` | Retrieval recall@k: vector, ungated rerank, and the shipped gate |
+| `cli.py` | Command-line entrypoint; calls `answer`, so it uses the fused pool |
+| `eval.py` | Retrieval recall@k: vector, ungated rerank, confident (vector pool + gate), and hybrid |
 | `library.py` | Safe names, list/read/atomic write/delete under `DOCS_DIR` (no rebuild) |
 | `review.py` | Proposal JSON in `review/` until Approve |
 | `format_md.py` | LLM rewrite into `#` / `##` Markdown for the chunker |
@@ -252,13 +267,13 @@ being able to discuss:
 
 ## Web UI
 
-`server.py` serves Ask at `/` (`static/index.html`) and Library at `/library` (`static/library.html`), plus a WebSocket at `/ws`. Ask keeps conversations in this browser (`localStorage`, key `ask-northwind-threads`). The sidebar lists the current thread and recent ones. A follow-up sends `{ "question", "history" }` (the earlier questions and answers of that thread). Search rewrites a follow-up into one standalone question, then retrieves, reranks, and generates with the conversation in the prompt. The first question is searched as typed. **New chat** starts another thread and leaves the previous one in the list. `{ "cancel": true }` stops an answer that is still streaming. The server does not store the transcript. Retrieved context starts collapsed. Opening a source file shows that markdown read-only. Both pages share a top nav, a dark/light control, and `static/app.css`. The app is a PWA: Add to Home Screen installs it (`start_url` `/`); the service worker caches the shell, not answers.
+`server.py` serves Ask at `/` (`static/index.html`) and Library at `/library` (`static/library.html`), plus a WebSocket at `/ws`. Ask keeps conversations in this browser (`localStorage`, key `ask-northwind-threads`). The sidebar lists the current thread and recent ones. A follow-up sends `{ "question", "history" }` (the earlier questions and answers of that thread). Search rewrites a follow-up into one standalone question, then retrieves from the RRF union of the vector top 20 and the BM25 top 20, reranks, and generates with the conversation in the prompt. The first question is searched as typed. **New chat** starts another thread and leaves the previous one in the list. `{ "cancel": true }` stops an answer that is still streaming. The server does not store the transcript. Retrieved context starts collapsed. Opening a source file shows that markdown read-only. Both pages share a top nav, a dark/light control, and `static/app.css`. The app is a PWA: Add to Home Screen installs it (`start_url` `/`); the service worker caches the shell, not answers.
 
 ```bash
 ./.venv/bin/python server.py
 ```
 
-Then open `http://127.0.0.1:8000`. `cli.py` still asks one question and does not send history. It prints whether the reranker ordered the sources or the scores were below 0, so vector order stayed.
+Then open `http://127.0.0.1:8000`. `cli.py` still asks one question and does not send history. It uses the same fused pool as Ask. It prints whether the reranker ordered the sources or the scores were below 0, so vector order of that pool stayed.
 
 `server.py` reads `HOST` and `PORT` from `.env` (a shell export wins). The same commented pair is in `.env.example`. Unset, the server listens on `127.0.0.1` port `8000`, so only this computer can open it. To reach Ask or Library from another machine on the same network, set this in `.env` and start the server again:
 
@@ -269,10 +284,10 @@ PORT=8000
 
 `PORT` must be an integer from 1 through 65535. On the other machine, open `http://<this-mac-lan-ip>:8000` (use the port you set). On this Mac, `ipconfig getifaddr en0` prints the Wi-Fi address (`en1` on some Macs). The page shell is still reachable, but Ask, the socket, and Library actions need the master password. One password, no accounts. The cookie lasts 10 days from last use (the idle window slides) and dies on logout. An open socket for that token closes then, and also when the idle window runs out. A new login does not revoke older tokens. Other machines on `HOST=0.0.0.0` use that password. `build_index.py`, `cli.py`, `eval.py`, `chunk.py`, and `retrieve.py` stay unlocked. The first inbound connection may need Python allowed under System Settings → Network → Firewall.
 
-Each turn labels a source `section` or `excerpt`, shows the heading, and shows the rerank logit when there is one. The order line says which ranking shipped. A turn can show **How this was retrieved** (the best logit, vector briefs, and rerank briefs). A source badge reads **Changed since Re-index**, **Not in the index**, or **Missing from the library**. An empty thread lists up to five `##` headings and does not send them. Library's Ask link and heading links fill Search in and the draft. They do not send. `GET /api/docs?suggest=` returns `suggestions`. A bad `suggest` is HTTP 400. When the library is ahead of the index, a note links to Library. The page keeps the active thread. The model sees at most four earlier exchanges (8 messages, 6,000 characters, 1,500 per message). If the rewrite fails, search uses the previous question plus the new one.
+Each turn labels a source `section` or `excerpt`, shows the heading, and shows the rerank logit when there is one. The order line says which ranking shipped. A turn can show **How this was retrieved** (the best logit, vector briefs, rerank briefs, and lexical briefs when BM25 returned hits). A source badge reads **Changed since Re-index**, **Not in the index**, or **Missing from the library**. An empty thread lists up to five `##` headings and does not send them. Library's Ask link and heading links fill Search in and the draft. They do not send. `GET /api/docs?suggest=` returns `suggestions`. A bad `suggest` is HTTP 400. When the library is ahead of the index, a note links to Library. The page keeps the active thread. The model sees at most four earlier exchanges (8 messages, 6,000 characters, 1,500 per message). If the rewrite fails, search uses the previous question plus the new one.
 
 ## Library and re-index
 
 Library is a separate page at `/library`. It lists markdown under `DOCS_DIR` (default `docs/`, including subfolders). Category pills are the folder names directly under that corpus. Upload is markdown only (basename, 1 MB, up to 20 files). Preview opens the file read-only. An upload or a delete does not change the live file: it stages a proposal under `review/` (gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. The lock is in front of the page. Approve is still the human gate that writes the corpus. Unlocking does not write files. Approving does not replace the password. Search still changes only when you click **Re-index**, which rebuilds FAISS from every `*.md` under `DOCS_DIR` and hot-reloads search. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
-Per-user accounts and OAuth stay out, along with PDF/Word, a server-side chat log, auto-reindex on upload, and offline Q&A. Conversation threads stay in the browser.
+Per-user accounts and OAuth stay out, along with PDF/Word, a server-side chat log, auto-reindex on upload, offline Q&A, wikilinks, one-file re-index, and upload-into-folder. Conversation threads stay in the browser.
