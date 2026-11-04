@@ -23,6 +23,7 @@ from library import (
     delete_doc,
     file_mtime,
     live_path,
+    safe_folder,
     safe_md_name,
     safe_md_relpath,
     write_doc,
@@ -191,11 +192,19 @@ def stage_upload(
     data: bytes,
     docs_dir: Path | None = None,
     review_dir: Path | None = None,
+    folder: str = "",
 ) -> Proposal:
     try:
         name = safe_md_name(filename)
     except UnsafeNameError as exc:
         raise UploadError(str(exc)) from exc
+    if folder:
+        try:
+            rel = safe_md_relpath(safe_folder(folder) + "/" + name)
+        except UnsafeNameError as exc:
+            raise UploadError(str(exc)) from exc
+    else:
+        rel = name
     if not data:
         raise UploadError("Empty file.")
     if len(data) > MAX_UPLOAD_BYTES:
@@ -206,7 +215,7 @@ def stage_upload(
         raise UploadError("File is not valid UTF-8.") from exc
     body, origin, format_error = _formatted(text)
     docs = docs_dir or library.DOCS_DIR
-    path, rel = live_path(name, docs)
+    path, rel = live_path(rel, docs)
     iso, ns, digest = _base(path)
     proposal = Proposal(
         target=rel,

@@ -57,6 +57,7 @@
       <div id="thread-scroll">
         <div class="thread-inner">
           <p class="lede" id="empty-ask">Answers use only the mounted documents. A follow-up keeps this conversation. New chat starts another one.</p>
+          <div id="suggestions" hidden></div>
           <p id="vault-line" class="vault-line">Loading the library…</p>
           <p id="index-note" class="index-note" hidden></p>
           <div id="thread"></div>
@@ -148,6 +149,7 @@
     const threadEl = document.getElementById("thread");
     const threadScroll = document.getElementById("thread-scroll");
     const emptyAsk = document.getElementById("empty-ask");
+    const suggestionsEl = document.getElementById("suggestions");
     const vaultLine = document.getElementById("vault-line");
     const scopeEl = document.getElementById("scope");
     const threadFilter = document.getElementById("thread-filter");
@@ -191,6 +193,11 @@
       retrieving: "Searching documents…",
       generating: "Writing answer…",
     };
+    const FILE_STATE_TEXT = {
+      changed: "Changed since Re-index",
+      not_indexed: "Not in the index",
+      missing_on_disk: "Missing from the library",
+    };
 
     let ws = null;
     let suppressClose = false;
@@ -201,11 +208,81 @@
     let active = null;
     let committed = [];
     let store = { version: 1, activeId: null, threads: [] };
+    const fileStates = new Map();
+    let vaultGen = 0;
+    let suggestGen = 0;
 
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, (ch) =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])
       );
+    }
+
+    function unescapeHtml(text) {
+      return text
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+    }
+
+    function posixStem(path) {
+      const parts = String(path).split("/").filter((part) => part.length > 0);
+      const base = parts.length ? parts[parts.length - 1] : "";
+      const dot = base.lastIndexOf(".");
+      if (dot <= 0) return base;
+      return base.slice(0, dot);
+    }
+
+    function resolveWikilink(target, names) {
+      if (typeof target !== "string" || !Array.isArray(names)) return null;
+      let raw = target.split("|")[0];
+      raw = raw.split("#")[0].trim();
+      if (!raw || raw.includes("\0") || raw.includes("\\")) return null;
+      if (raw.startsWith("/")) return null;
+      const parts = raw.split("/").filter((part) => part.length > 0);
+      if (!parts.length || parts.some((part) => part === "." || part === ".." || part.startsWith("."))) return null;
+      const want = parts.join("/");
+      const lowered = new Map();
+      for (const name of names) {
+        if (typeof name !== "string") continue;
+        lowered.set(name.toLowerCase(), name);
+      }
+      const withMd = want.toLowerCase().endsWith(".md") ? want : want + ".md";
+      const exact = lowered.get(want.toLowerCase()) || lowered.get(withMd.toLowerCase());
+      if (exact) return exact;
+      const stem = posixStem(want).toLowerCase();
+      const stems = names.filter((name) => typeof name === "string" && posixStem(name).toLowerCase() === stem);
+      if (stems.length === 1) return stems[0];
+      return null;
+    }
+
+    function wikilinkNames() {
+      return [...fileStates.keys()];
+    }
+
+    function linkifyWikilinks(escaped) {
+      // Match raw text. escapeHtml writes ' as &#39;, and that # would end the target.
+      const raw = unescapeHtml(escaped);
+      const re = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
+      let out = "";
+      let last = 0;
+      let match;
+      while ((match = re.exec(raw))) {
+        const offset = match.index;
+        const embed = offset > 0 && raw[offset - 1] === "!";
+        const target = match[1];
+        const alias = match[2];
+        const path = embed ? null : resolveWikilink(target, wikilinkNames());
+        if (!path) continue;
+        out += escapeHtml(raw.slice(last, offset));
+        const label = alias != null ? alias : target;
+        out += `<button type="button" class="wikilink" data-path="${escapeHtml(path)}">${escapeHtml(label)}</button>`;
+        last = offset + match[0].length;
+      }
+      out += escapeHtml(raw.slice(last));
+      return out;
     }
 
     function renderInline(text) {
@@ -222,6 +299,7 @@
       return bits.map((bit) => {
         if (bit.t === "code") return `<code>${escapeHtml(bit.v)}</code>`;
         let s = escapeHtml(bit.v);
+        s = linkifyWikilinks(s);
         s = s.replace(
           /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
           (_, label, href) =>
@@ -357,8 +435,10 @@
 
     let threadQuery = "";
     let pinnedFile = "";
+    let pendingLaunch = null;
     let vaultHasPto = true;
     let previewName = "";
+    let previewGen = 0;
 
     function snapshotChunk(chunk) {
       if (!chunk || typeof chunk !== "object") return null;
@@ -373,6 +453,41 @@
       };
     }
 
+    function snapshotBrief(item) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const score = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+      return {
+        source_file: typeof item.source_file === "string" ? item.source_file : "",
+        heading: typeof item.heading === "string" ? item.heading : "",
+        vector_score: score(item.vector_score),
+        rerank_score: score(item.rerank_score),
+        lexical_score: score(item.lexical_score),
+      };
+    }
+
+    function snapshotBriefs(value) {
+      if (value == null) return [];
+      if (!Array.isArray(value)) return null;
+      return value.slice(0, 5).map(snapshotBrief).filter(Boolean);
+    }
+
+    function snapshotTrace(trace) {
+      if (!trace || typeof trace !== "object" || Array.isArray(trace)) return null;
+      const vector = snapshotBriefs(trace.vector);
+      const rerank = snapshotBriefs(trace.rerank);
+      const lexical = snapshotBriefs(trace.lexical);
+      if (vector === null || rerank === null || lexical === null) return null;
+      const best = trace.best_logit;
+      return {
+        best_logit: typeof best === "number" && Number.isFinite(best) ? best : null,
+        trusted: trace.trusted === true,
+        rank_source: trace.rank_source === "rerank" ? "rerank" : "vector",
+        vector,
+        rerank,
+        lexical,
+      };
+    }
+
     function snapshotTurn(turn) {
       return {
         question: turn.question,
@@ -382,6 +497,7 @@
         scope: typeof turn.scope === "string" ? turn.scope : "",
         wrong: Boolean(turn.wrong),
         chunks: Array.isArray(turn.chunks) ? turn.chunks.map(snapshotChunk).filter(Boolean) : [],
+        trace: snapshotTrace(turn.trace),
       };
     }
 
@@ -703,7 +819,9 @@
     }
 
     function syncEmpty() {
-      emptyAsk.hidden = threadEl.childElementCount > 0;
+      const filled = threadEl.childElementCount > 0;
+      emptyAsk.hidden = filled;
+      suggestionsEl.hidden = filled || suggestionsEl.childElementCount === 0;
     }
 
     function syncComposer() {
@@ -731,15 +849,19 @@
     function setIndexNote(stale) {
       indexNote.replaceChildren();
       if (!stale) {
+        const refresh = !indexNote.hidden;
         indexNote.hidden = true;
+        if (refresh) loadVault();
         return;
       }
+      const refresh = indexNote.hidden;
       indexNote.hidden = false;
       indexNote.append("The library has changed since the last Re-index. Answers still use the previous index. ");
       const link = document.createElement("a");
       link.href = "/library";
       link.textContent = "Re-index on the Library page.";
       indexNote.append(link);
+      if (refresh) loadVault();
     }
 
     function setRebuildLock(locked) {
@@ -835,6 +957,7 @@
         ranking: "",
         scope: "",
         wrong: false,
+        trace: null,
         record: null,
         chunks: [],
         md: "",
@@ -955,6 +1078,78 @@
       }
     }
 
+    function traceScore(value) {
+      return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "";
+    }
+
+    function traceSentence(trace) {
+      const logit = trace.best_logit;
+      if (typeof logit === "number" && Number.isFinite(logit)) {
+        const shown = logit.toFixed(2);
+        if (trace.trusted === true) return "Best rerank score " + shown + ". Reranker order shipped.";
+        return "Best rerank score " + shown + ". Below 0, so vector order shipped.";
+      }
+      return "No rerank score. Vector order shipped.";
+    }
+
+    function appendTraceList(host, label, rows, scoreKey) {
+      const name = document.createElement("div");
+      name.textContent = label;
+      const list = document.createElement("ol");
+      const items = Array.isArray(rows) ? rows : [];
+      for (const brief of items) {
+        if (!brief || typeof brief !== "object") continue;
+        const file = typeof brief.source_file === "string" ? brief.source_file : "";
+        const heading = typeof brief.heading === "string" ? brief.heading : "";
+        const li = document.createElement("li");
+        li.textContent = file + " — " + heading + " — " + traceScore(brief[scoreKey]);
+        list.append(li);
+      }
+      host.append(name, list);
+    }
+
+    function appendTrace(host, trace) {
+      const details = document.createElement("details");
+      details.className = "trace";
+      const summary = document.createElement("summary");
+      summary.textContent = "How this was retrieved";
+      const lead = document.createElement("p");
+      lead.textContent = traceSentence(trace);
+      details.append(summary, lead);
+      appendTraceList(details, "Nearest vectors", trace.vector, "vector_score");
+      if (Array.isArray(trace.rerank) && trace.rerank.length) {
+        appendTraceList(details, "Reranker order", trace.rerank, "rerank_score");
+      }
+      if (Array.isArray(trace.lexical) && trace.lexical.length) {
+        appendTraceList(details, "Lexical matches", trace.lexical, "lexical_score");
+      }
+      host.append(details);
+    }
+
+    function setFileBadge(card, name) {
+      let badge = card.querySelector("a.file-state");
+      const label = FILE_STATE_TEXT[fileStates.get(name)] || "";
+      if (!label) {
+        if (badge) badge.remove();
+        return;
+      }
+      if (!badge) {
+        badge = document.createElement("a");
+        const file = card.querySelector(".source-file");
+        if (!file || !file.parentElement) return;
+        file.parentElement.append(badge);
+      }
+      badge.className = "file-state";
+      badge.href = "/library?doc=" + encodeURIComponent(name);
+      badge.textContent = label;
+    }
+
+    function paintFileState() {
+      document.querySelectorAll("#thread .chunk").forEach((card) => {
+        setFileBadge(card, card.dataset.source || "");
+      });
+    }
+
     function showSources(turn, chunks, ranking) {
       turn.chunks = chunks;
       turn.ranking = ranking;
@@ -973,6 +1168,9 @@
         line.textContent = "Follow-up searched as: " + turn.query;
         el.append(line);
       }
+      if (turn.trace && typeof turn.trace === "object" && !Array.isArray(turn.trace)) {
+        appendTrace(el, turn.trace);
+      }
       if (!chunks.length) {
         const empty = document.createElement("p");
         empty.className = "preview";
@@ -984,6 +1182,8 @@
         const card = document.createElement("article");
         card.className = "chunk";
         card.dataset.n = String(chunk.n);
+        const sourceName = typeof chunk.source_file === "string" ? chunk.source_file : "";
+        card.dataset.source = sourceName;
         const meta = document.createElement("div");
         meta.className = "meta";
         const left = document.createElement("div");
@@ -1013,6 +1213,7 @@
         preview.className = "preview";
         preview.textContent = chunk.preview || "";
         card.append(meta, preview);
+        setFileBadge(card, sourceName);
         el.append(card);
       }
       refreshSupport(turn);
@@ -1020,6 +1221,7 @@
 
     async function openPreview(name) {
       if (!name) return;
+      const gen = ++previewGen;
       previewName = name;
       previewTitle.textContent = name;
       previewMeta.textContent = "Loading…";
@@ -1028,12 +1230,14 @@
       if (!previewDialog.open) previewDialog.showModal();
       try {
         const res = await fetch("/api/docs/" + encPath(name));
+        if (gen !== previewGen) return;
         if (res.status === 401) {
           previewDialog.close();
           showLock(SESSION_ENDED);
           return;
         }
         const body = await res.json().catch(() => ({}));
+        if (gen !== previewGen) return;
         if (res.status === 404) {
           previewMeta.textContent = "";
           previewBody.textContent = "This file is no longer in the library.";
@@ -1047,6 +1251,7 @@
         previewMeta.textContent = "View only";
         previewBody.innerHTML = renderMarkdown(body.body || "");
       } catch (err) {
+        if (gen !== previewGen) return;
         previewMeta.textContent = "";
         previewBody.textContent = OFFLINE_MSG;
       }
@@ -1062,6 +1267,7 @@
         scope: active.scope || "",
         wrong: Boolean(active.wrong),
         chunks: active.chunks || [],
+        trace: active.trace ?? null,
       };
       committed.push(record);
       active.record = record;
@@ -1085,6 +1291,7 @@
       view.wrong = Boolean(turn.wrong);
       view.scope = turn.scope || "";
       view.query = turn.query || "";
+      view.trace = turn.trace && typeof turn.trace === "object" && !Array.isArray(turn.trace) ? turn.trace : null;
       view.md = turn.answer;
       view.answerEl.dataset.md = turn.answer;
       view.answerEl.innerHTML = renderMarkdown(turn.answer);
@@ -1210,12 +1417,63 @@
       scopeEl.value = values.includes(current) ? current : "";
     }
 
-    async function loadVault() {
+    function docsUrl() {
+      return "/api/docs?suggest=" + encodeURIComponent(scopeEl.value);
+    }
+
+    function renderSuggestions(items) {
+      suggestionsEl.replaceChildren();
+      const list = Array.isArray(items) ? items.slice(0, 5) : [];
+      for (const item of list) {
+        if (!item || typeof item.question !== "string" || !item.question) continue;
+        const scope = typeof item.scope === "string" ? item.scope : "";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ghost suggest";
+        button.textContent = item.question;
+        button.addEventListener("click", () => {
+          input.value = item.question;
+          if (scope.endsWith(".md")) {
+            pinFile(scope);
+            loadSuggestions();
+          }
+          input.focus();
+        });
+        suggestionsEl.append(button);
+      }
+      syncEmpty();
+    }
+
+    async function loadSuggestions() {
+      const gen = ++suggestGen;
       try {
-        const res = await fetch("/api/docs");
+        const res = await fetch(docsUrl());
+        if (gen !== suggestGen) return;
         if (!res.ok) return;
         const body = await res.json().catch(() => ({}));
+        if (gen !== suggestGen) return;
+        renderSuggestions(body.suggestions);
+      } catch (err) {
+        if (gen !== suggestGen) return;
+      }
+    }
+
+    async function loadVault() {
+      const gen = ++vaultGen;
+      const sugGen = ++suggestGen;
+      try {
+        const res = await fetch(docsUrl());
+        if (gen !== vaultGen) return;
+        if (!res.ok) return;
+        const body = await res.json().catch(() => ({}));
+        if (gen !== vaultGen) return;
         const docs = Array.isArray(body.docs) ? body.docs : [];
+        fileStates.clear();
+        for (const doc of docs) {
+          if (!doc || typeof doc.name !== "string" || !doc.name) continue;
+          if (typeof doc.state !== "string") continue;
+          fileStates.set(doc.name, doc.state);
+        }
         const files = docs.filter((doc) => doc.state !== "missing_on_disk");
         vaultHasPto = files.some((doc) => doc.name === "pto_policy.md" || String(doc.name).endsWith("/pto_policy.md"));
         const folders = [...new Set(files.map((doc) => topFolder(doc.name)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -1223,25 +1481,81 @@
         vaultLine.textContent = files.length + (files.length === 1 ? " file · " : " files · ") + chunks + (folders.length ? " · " + folders.join(", ") : "");
         fillScope(folders);
         syncComposer();
+        if (applyLaunchDraft()) loadSuggestions();
+        else if (sugGen === suggestGen) renderSuggestions(body.suggestions);
       } catch (err) {
+        if (gen !== vaultGen) return;
         vaultLine.textContent = "The library could not be loaded.";
+      } finally {
+        if (gen === vaultGen) paintFileState();
       }
+    }
+
+    function pinFile(name) {
+      pinnedFile = name;
+      const folders = [...scopeEl.options].map((opt) => opt.value).filter((value) => value && !value.endsWith(".md"));
+      fillScope(folders);
+      scopeEl.value = name;
     }
 
     function askAboutFile() {
       if (!previewName) return;
-      pinnedFile = previewName;
-      const folders = [...scopeEl.options].map((opt) => opt.value).filter((value) => value && !value.endsWith(".md"));
-      fillScope(folders);
-      scopeEl.value = previewName;
+      pinFile(previewName);
+      loadSuggestions();
       if (previewDialog.open) previewDialog.close();
       input.focus();
     }
 
-    function startAsk() {
+    function acceptScope(value) {
+      if (!value || value.includes("\0") || value.includes("\\")) return false;
+      if (value.startsWith("/")) return false;
+      const parts = value.split("/");
+      return parts.every((part) => part && part !== "." && part !== ".." && !part.startsWith("."));
+    }
+
+    function acceptQ(value) {
+      return value.length >= 1 && value.length <= 400;
+    }
+
+    function readLaunch() {
+      if (pendingLaunch) return;
+      const params = new URLSearchParams(location.search);
+      const scope = params.get("scope");
+      const q = params.get("q");
+      pendingLaunch = {
+        scope: typeof scope === "string" ? scope : "",
+        q: typeof q === "string" ? q : "",
+        done: false,
+      };
+    }
+
+    function applyLaunchDraft() {
+      if (!pendingLaunch || pendingLaunch.done) return false;
+      const scope = pendingLaunch.scope;
+      const q = pendingLaunch.q;
+      pendingLaunch.done = true;
+      let changed = false;
+      if (acceptScope(scope)) {
+        if (scope.endsWith(".md")) {
+          pinFile(scope);
+          changed = true;
+        } else if ([...scopeEl.options].some((opt) => opt.value === scope)) {
+          if (scopeEl.value !== scope) {
+            scopeEl.value = scope;
+            changed = true;
+          }
+        }
+      }
+      if (acceptQ(q)) input.value = q;
+      history.replaceState(null, "", "/");
+      return changed;
+    }
+
+    async function startAsk() {
+      readLaunch();
       connect();
       checkRebuildOnLoad();
-      loadVault();
+      await loadVault();
       if (!rebuilding && !answering) setStatus("Ready", "idle");
       input.focus();
     }
@@ -1335,6 +1649,7 @@
       }
       if (event.type === "sources") {
         if (!turn) return;
+        turn.trace = event.trace ?? null;
         showSources(turn, event.chunks || [], event.ranking || "vector");
         return;
       }
@@ -1429,6 +1744,7 @@
     }
 
     form.addEventListener("submit", ask);
+    scopeEl.addEventListener("change", () => loadSuggestions());
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
@@ -1451,6 +1767,11 @@
     threadsClose.addEventListener("click", () => threadsDialog.close());
     previewClose.addEventListener("click", () => previewDialog.close());
     previewAsk.addEventListener("click", askAboutFile);
+    previewBody.addEventListener("click", (event) => {
+      const link = event.target.closest("button.wikilink");
+      if (!link || !previewBody.contains(link) || !link.dataset.path) return;
+      openPreview(link.dataset.path);
+    });
     threadFilter.addEventListener("input", () => {
       threadQuery = threadFilter.value;
       threadFilterMobile.value = threadQuery;

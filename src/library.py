@@ -1,13 +1,14 @@
 """Operate the corpus folder for the PWA library.
 
-Upload accepts basenames only (no slashes) and writes into the DOCS_DIR
-root. Delete and list use posix-relative paths so nested files already on
-disk can be shown and removed. The chunker only reads markdown. Upload and
-delete only touch files on disk. They do not rebuild FAISS — search still
-reads index/ until someone calls build() + reload(). List marks an indexed
-file `changed` when its bytes differ from the digest stored at index
-time. An older index with no digests still falls back to mtime, because a
-cloud sync can touch a timestamp without changing the text.
+A multipart `folder` prefixes the basename. A missing folder still writes
+the root. Upload accepts basenames only (no slashes). Delete and list use
+posix-relative paths so nested files already on disk can be shown and
+removed. The chunker only reads markdown. Upload and delete only touch
+files on disk. They do not rebuild FAISS — search still reads index/
+until someone calls build() + reload(). List marks an indexed file
+`changed` when its bytes differ from the digest stored at index time. An
+older index with no digests still falls back to mtime, because a cloud
+sync can touch a timestamp without changing the text.
 """
 from __future__ import annotations
 
@@ -59,6 +60,55 @@ def safe_md_relpath(name: str) -> str:
     if not path.name.lower().endswith(".md") or len(path.name) < 4:
         raise UnsafeNameError("Only .md filenames are allowed.")
     return path.as_posix()
+
+
+def safe_folder(name: str) -> str:
+    """Folder prefix joined in front of an upload basename.
+
+    A slash stays out of the filename. Hidden segments and `..` would hide
+    a note or leave the corpus, so those prefixes are refused.
+    """
+    raw = name.strip()
+    if not raw or "\x00" in raw or "\\" in raw:
+        raise UnsafeNameError("Unsafe folder.")
+    path = Path(raw)
+    if path.is_absolute() or path.anchor:
+        raise UnsafeNameError("Unsafe folder.")
+    parts = path.parts
+    if not parts or any(part in (".", "..") or part.startswith(".") for part in parts):
+        raise UnsafeNameError("Unsafe folder.")
+    return path.as_posix()
+
+
+def resolve_wikilink(target: str, names: list[str]) -> str | None:
+    """Map a wikilink target onto one loaded note.
+
+    The exact relative path wins before a filename stem. Two files named
+    `notes.md` therefore do not make bare `notes` a link. Hidden segments
+    and `..` stay unresolved so a target cannot point outside the list.
+    """
+    if not isinstance(target, str):
+        return None
+    raw = target.split("|", 1)[0]
+    raw = raw.split("#", 1)[0].strip()
+    if not raw or "\x00" in raw or "\\" in raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute() or path.anchor:
+        return None
+    parts = path.parts
+    if not parts or any(part in (".", "..") or part.startswith(".") for part in parts):
+        return None
+    want = path.as_posix()
+    lowered = {name.lower(): name for name in names}
+    exact = lowered.get(want.lower()) or lowered.get((want if want.lower().endswith(".md") else want + ".md").lower())
+    if exact:
+        return exact
+    stem = Path(want).stem.lower()
+    stems = [name for name in names if Path(name).stem.lower() == stem]
+    if len(stems) == 1:
+        return stems[0]
+    return None
 
 
 def file_digest(path: Path) -> str:
@@ -300,6 +350,79 @@ def search_phrases(
             if len(hits) >= limit:
                 return hits
     return hits
+
+
+def _in_scope(source_file: str, scope: str | None) -> bool:
+    """Same scope rule as retrieval, without importing retrieve.
+
+    Empty scope matches everything. A `.md` scope is an exact path.
+    Anything else is that folder prefix.
+    """
+    if not scope:
+        return True
+    if scope.lower().endswith(".md"):
+        return source_file == scope
+    prefix = scope.rstrip("/")
+    return source_file == prefix or source_file.startswith(prefix + "/")
+
+
+def _heading_text(line: str) -> str | None:
+    if not line.startswith("## "):
+        return None
+    text = line[3:].replace("`", "").replace("*", "").strip()
+    if len(text) < 8 or len(text) > 120:
+        return None
+    return text
+
+
+def heading_questions(
+    scope: str | None = None,
+    docs_dir: Path | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """Heading buttons for an empty Ask thread.
+
+    Walking files in path order would fill the row from the first note.
+    Round-robin keeps a later file visible. Backtick and star marks are
+    not part of the question, and a very short line is not a heading
+    worth suggesting.
+    """
+    docs_dir = docs_dir or DOCS_DIR
+    queues: list[tuple[str, list[str]]] = []
+    for path, rel in markdown_paths(docs_dir):
+        if not _in_scope(rel, scope):
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        headings: list[str] = []
+        for line in lines:
+            question = _heading_text(line)
+            if question is None:
+                continue
+            headings.append(question)
+            if len(headings) >= 8:
+                break
+        if headings:
+            queues.append((rel, headings))
+    picked: list[dict] = []
+    if limit < 1:
+        return picked
+    depth = 0
+    while len(picked) < limit:
+        grew = False
+        for rel, headings in queues:
+            if depth >= len(headings):
+                continue
+            picked.append({"question": headings[depth], "scope": rel})
+            grew = True
+            if len(picked) >= limit:
+                break
+        if not grew:
+            break
+        depth += 1
+    return picked
 
 
 def delete_doc(name: str, docs_dir: Path | None = None) -> None:

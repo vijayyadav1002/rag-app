@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from auth import (
     COOKIE_NAME,
@@ -37,7 +37,7 @@ from auth import (
     token_key,
     touch,
 )
-from build_index import IndexBuildError, build
+from build_index import IndexBuildError, build, rebuild_paths
 from format_md import FormatError
 from generate import answer_stream
 from library import (
@@ -45,9 +45,12 @@ from library import (
     UnsafeNameError,
     UploadError,
     clean_scope,
+    heading_questions,
     index_meta,
     list_docs,
     read_doc,
+    safe_folder,
+    safe_md_relpath,
     search_phrases,
 )
 from llm import LLMConfigError
@@ -354,8 +357,28 @@ def _raise_review(exc: Exception) -> None:
     raise exc
 
 
-def _rebuild_sync() -> dict:
-    config = build()
+def reindex_paths(payload):
+    """None means full build. A list is the file set. Bad shapes raise ValueError."""
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("Expected a JSON object.")
+    if "paths" not in payload:
+        return None
+    paths = payload["paths"]
+    if not isinstance(paths, list):
+        raise ValueError("Send a list of files.")
+    if any(not isinstance(item, str) for item in paths):
+        raise ValueError("Each file name must be a string.")
+    if len(paths) > 20:
+        raise ValueError("Send at most 20 files.")
+    if not paths:
+        raise ValueError("No files to re-index.")
+    return list(paths)
+
+
+def _rebuild_sync(paths: list[str] | None = None) -> dict:
+    config = build() if paths is None else rebuild_paths(paths)
     try:
         reload_index()
     except Exception as exc:
@@ -445,10 +468,16 @@ def api_status() -> dict:
 
 
 @app.get("/api/docs")
-def api_docs(q: str = "") -> dict:
+def api_docs(q: str = "", suggest: str | None = None) -> dict:
     body = _docs_body()
     if q.strip():
         body["matches"] = search_phrases(q)
+    if suggest is not None:
+        try:
+            scope = None if suggest == "" else clean_scope(suggest)
+        except UnsafeNameError as exc:
+            raise HTTPException(400, "Choose a folder or a file.") from exc
+        body["suggestions"] = heading_questions(scope or None)
     return body
 
 
@@ -463,15 +492,23 @@ def api_read_doc(name: str) -> dict:
 
 
 @app.post("/api/docs")
-async def api_upload(files: list[UploadFile] = File(default=[])):
+async def api_upload(
+    files: list[UploadFile] = File(default=[]),
+    folder: str = Form(""),
+):
     _unlocked()
     if not files or len(files) > MAX_UPLOAD_FILES:
         raise HTTPException(400, "Send between 1 and 20 markdown files.")
+    if folder.strip():
+        try:
+            safe_folder(folder)
+        except UnsafeNameError as exc:
+            raise HTTPException(400, str(exc)) from exc
     errors = []
     for uf in files:
         data = await uf.read()
         try:
-            stage_upload(uf.filename or "", data)
+            stage_upload(uf.filename or "", data, folder=folder)
         except UploadError as exc:
             errors.append({"name": uf.filename or "", "message": str(exc)})
     if errors and len(errors) == len(files):
@@ -570,8 +607,26 @@ def api_reject(name: str):
 
 
 @app.post("/api/reindex")
-async def api_reindex():
+async def api_reindex(request: Request):
     global _rebuilding
+    # The page button posts no body. A file row sends JSON.
+    # Read the body before the lock. An await between the 409 check and the
+    # flag lets a second request publish into the same index/.tmp.
+    payload = None
+    content_type = request.headers.get("content-type", "")
+    if content_type.lower().startswith("application/json"):
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(400, "Expected JSON body.") from exc
+    try:
+        paths = reindex_paths(payload)
+        if paths is not None:
+            paths = [safe_md_relpath(name) for name in paths]
+    except UnsafeNameError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if _rebuilding:
         raise HTTPException(409, "Index is rebuilding. Try again when it finishes.")
     _rebuilding = True
@@ -579,7 +634,7 @@ async def api_reindex():
     try:
         await _idle().wait()
         # shield: a cancelled fetch must not abort the worker thread.
-        rebuild = asyncio.create_task(asyncio.to_thread(_rebuild_sync))
+        rebuild = asyncio.create_task(asyncio.to_thread(_rebuild_sync, paths))
         try:
             config = await asyncio.shield(rebuild)
         except IndexBuildError as exc:

@@ -3,11 +3,13 @@ Tiny retrieval evaluation harness.
 
 This is the concrete "accuracy" story: a hand-labeled set of questions with
 a known correct source document, scored with recall@k (did the correct
-source appear anywhere in the top-k retrieved chunks?). Three columns:
-vector search alone, rerank order with the confidence gate off, and the
+source appear anywhere in the top-k retrieved chunks?). Four columns:
+vector search alone, rerank order with the confidence gate off, the
 shipped retrieve() that keeps rerank order only when the best logit is
-at least 0. The middle column exists so a rerank mistake stays visible
-after the gate fixes it.
+at least 0, and that same gate on the hybrid candidate pool. The
+rerank-order column exists so a rerank mistake stays visible after the
+gate fixes it. Ask and the CLI use the fused pool. The first three
+columns stay on the vector pool.
 
 In a production system this set would be much larger and ideally sourced
 from real user queries / support tickets, and you'd also track precision
@@ -83,6 +85,17 @@ def _confident(query: str, top_k: int):
     return retrieve(query, top_k=top_k, candidate_pool=20, use_reranker=True, trust_gate=True)
 
 
+def _hybrid(query: str, top_k: int):
+    return retrieve(
+        query,
+        top_k=top_k,
+        candidate_pool=20,
+        use_reranker=True,
+        trust_gate=True,
+        hybrid=True,
+    )
+
+
 if __name__ == "__main__":
     print(f"Evaluating on {len(TEST_SET)} hand-labeled queries...\n")
 
@@ -90,9 +103,10 @@ if __name__ == "__main__":
         evaluate(_vector, "vector only"),
         evaluate(_rerank_order, "rerank order"),
         evaluate(_confident, "confident"),
+        evaluate(_hybrid, "hybrid"),
     ]
 
-    print(f"{'k':<4}{'vector only':<16}{'rerank order':<16}{'confident':<16}")
+    print(f"{'k':<4}{'vector only':<16}{'rerank order':<16}{'confident':<16}{'hybrid':<16}")
     for k in columns[0][0].recall_at_k:
         cells = [f"{col.recall_at_k[k]:<16.0%}" for col, _misses in columns]
         print(f"{k:<4}{''.join(cells)}")

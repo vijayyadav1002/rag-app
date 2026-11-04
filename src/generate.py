@@ -28,7 +28,7 @@ from collections.abc import Iterator
 from threading import Event
 
 from llm import LLMConfigError, complete, load_settings, stream as llm_stream
-from retrieve import RetrievedChunk, prompt_excerpts, retrieve
+from retrieve import RetrievedChunk, prompt_excerpts, retrieve_explained
 
 PREVIEW_CHARS = 240
 NO_INFO = (
@@ -224,7 +224,8 @@ def answer(
 ) -> tuple[str, list[RetrievedChunk]]:
     turns = normalize_history(history)
     query = _search_question(question, turns)
-    chunks = prompt_excerpts(retrieve(query, top_k=top_k, scope=scope))
+    chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
+    chunks = prompt_excerpts(chunks)
     if not chunks:
         return NO_INFO, []
 
@@ -256,7 +257,8 @@ def answer_stream(
     if turns and query != question:
         status["query"] = query
     yield status
-    chunks = prompt_excerpts(retrieve(query, top_k=top_k, scope=scope))
+    chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
+    chunks = prompt_excerpts(chunks)
     if _cancelled(cancel):
         return
 
@@ -264,6 +266,7 @@ def answer_stream(
         "type": "sources",
         "ranking": chunks[0].rank_source if chunks else "vector",
         "scope": scope or "",
+        "trace": trace,
         "chunks": [
             {
                 "n": i + 1,

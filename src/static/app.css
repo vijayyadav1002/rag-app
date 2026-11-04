@@ -77,6 +77,7 @@ button.cite, button.source-file, button.recent-open, button.recent-remove {
   font-weight: 500;
   border-radius: 0.25rem;
 }
+button.wikilink { color: var(--amber); background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
 a { color: var(--amber); }
 code, .mono, .doc-name, .source-file, .chunk .meta, .side-label, #conn, .count-pill, .context-order, .context-toggle {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -337,6 +338,8 @@ body.ask-app:not(.locked) .workspace {
   color: var(--muted);
 }
 .index-note { color: var(--amber); }
+#suggestions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0 0; }
+#suggestions[hidden] { display: none; }
 .turn {
   padding: 0 0 1.4rem;
   scroll-margin-bottom: 8rem;
@@ -391,6 +394,10 @@ body.ask-app:not(.locked) .workspace {
 }
 .chunks { display: grid; gap: 0.65rem; padding: 0.85rem; }
 .search-as { margin: 0; color: var(--amber); font-size: 0.85rem; }
+.trace { margin: 0 0 0.75rem; }
+.trace summary { cursor: pointer; color: var(--muted); }
+.trace ol { margin: 0.25rem 0 0.6rem; padding-left: 1.2rem; }
+.trace li { font-size: 0.85rem; }
 .chunk {
   border: 1px solid var(--line);
   border-radius: 0.5rem;
@@ -422,6 +429,7 @@ body.ask-app:not(.locked) .workspace {
   font-size: 0.75rem;
 }
 .source-file:hover { color: var(--amber); }
+a.file-state { color: var(--amber); font-size: 0.8rem; margin-left: 0.4rem; }
 .chunk .kind, .score-pill { color: var(--dim); }
 .score-pill { color: var(--ok); }
 .chunk .preview {

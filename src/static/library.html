@@ -154,6 +154,7 @@
         <div>
           <h2 id="preview-title">Document</h2>
           <p id="preview-meta"></p>
+          <div id="preview-asks" class="doc-actions"></div>
         </div>
         <button type="button" class="ghost" id="preview-close">Close</button>
       </header>
@@ -236,6 +237,7 @@
     let renameFrom = "";
     let phraseTimer = null;
     let sessionGen = 0;
+    let previewGen = 0;
     let lastDocs = [];
     let lastChunkTotal = null;
     let folder = "all";
@@ -262,6 +264,73 @@
       );
     }
 
+    function unescapeHtml(text) {
+      return text
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+    }
+
+    function posixStem(path) {
+      const parts = String(path).split("/").filter((part) => part.length > 0);
+      const base = parts.length ? parts[parts.length - 1] : "";
+      const dot = base.lastIndexOf(".");
+      if (dot <= 0) return base;
+      return base.slice(0, dot);
+    }
+
+    function resolveWikilink(target, names) {
+      if (typeof target !== "string" || !Array.isArray(names)) return null;
+      let raw = target.split("|")[0];
+      raw = raw.split("#")[0].trim();
+      if (!raw || raw.includes("\0") || raw.includes("\\")) return null;
+      if (raw.startsWith("/")) return null;
+      const parts = raw.split("/").filter((part) => part.length > 0);
+      if (!parts.length || parts.some((part) => part === "." || part === ".." || part.startsWith("."))) return null;
+      const want = parts.join("/");
+      const lowered = new Map();
+      for (const name of names) {
+        if (typeof name !== "string") continue;
+        lowered.set(name.toLowerCase(), name);
+      }
+      const withMd = want.toLowerCase().endsWith(".md") ? want : want + ".md";
+      const exact = lowered.get(want.toLowerCase()) || lowered.get(withMd.toLowerCase());
+      if (exact) return exact;
+      const stem = posixStem(want).toLowerCase();
+      const stems = names.filter((name) => typeof name === "string" && posixStem(name).toLowerCase() === stem);
+      if (stems.length === 1) return stems[0];
+      return null;
+    }
+
+    function wikilinkNames() {
+      return lastDocs.map((doc) => doc && doc.name).filter((name) => typeof name === "string");
+    }
+
+    function linkifyWikilinks(escaped) {
+      // Match raw text. escapeHtml writes ' as &#39;, and that # would end the target.
+      const raw = unescapeHtml(escaped);
+      const re = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
+      let out = "";
+      let last = 0;
+      let match;
+      while ((match = re.exec(raw))) {
+        const offset = match.index;
+        const embed = offset > 0 && raw[offset - 1] === "!";
+        const target = match[1];
+        const alias = match[2];
+        const path = embed ? null : resolveWikilink(target, wikilinkNames());
+        if (!path) continue;
+        out += escapeHtml(raw.slice(last, offset));
+        const label = alias != null ? alias : target;
+        out += `<button type="button" class="wikilink" data-path="${escapeHtml(path)}">${escapeHtml(label)}</button>`;
+        last = offset + match[0].length;
+      }
+      out += escapeHtml(raw.slice(last));
+      return out;
+    }
+
     function renderInline(text) {
       const bits = [];
       const re = /`([^`]+)`/g;
@@ -276,6 +345,7 @@
       return bits.map((bit) => {
         if (bit.t === "code") return `<code>${escapeHtml(bit.v)}</code>`;
         let s = escapeHtml(bit.v);
+        s = linkifyWikilinks(s);
         s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
         s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
         return s;
@@ -497,7 +567,17 @@
           move.textContent = "Move";
           move.disabled = rebuilding;
           move.addEventListener("click", () => openRename(doc.name));
-          actions.append(view);
+          const ask = document.createElement("a");
+          ask.className = "ghost";
+          ask.href = "/?scope=" + encodeURIComponent(doc.name);
+          ask.textContent = "Ask";
+          const fileReindex = document.createElement("button");
+          fileReindex.type = "button";
+          fileReindex.className = "ghost mutate";
+          fileReindex.textContent = "Re-index file";
+          fileReindex.disabled = rebuilding;
+          fileReindex.addEventListener("click", () => reindexOne(doc.name));
+          actions.append(view, ask, fileReindex);
           if (doc.state !== "missing_on_disk") actions.append(edit, move, del);
           row.append(main, actions);
           docList.append(row);
@@ -553,7 +633,28 @@
       }
     }
 
+    function setPreviewAsks(name, text) {
+      const list = document.createElement("div");
+      list.id = "preview-asks";
+      list.className = "doc-actions";
+      const source = typeof text === "string" ? text : "";
+      for (const line of source.split("\n")) {
+        if (!line.startsWith("## ")) continue;
+        const heading = line.slice(3).trim();
+        if (!heading || heading.length > 400) continue;
+        const link = document.createElement("a");
+        link.className = "ghost";
+        link.href = "/?scope=" + encodeURIComponent(name) + "&q=" + encodeURIComponent(heading);
+        link.textContent = "Ask: " + heading;
+        list.append(link);
+      }
+      const current = document.getElementById("preview-asks");
+      if (current) current.replaceWith(list);
+      else previewMeta.after(list);
+    }
+
     async function openPreview(name) {
+      const gen = ++previewGen;
       const doc = lastDocs.find((item) => item.name === name);
       previewTitle.textContent = name;
       const bits = [];
@@ -562,6 +663,7 @@
       }
       if (doc && doc.state) bits.push(STATE_LABEL[doc.state] || doc.state);
       previewMeta.textContent = bits.join(" · ") || "View only";
+      setPreviewAsks(name, "");
       previewBody.textContent = "Loading…";
       previewEdit.hidden = !doc || doc.state === "missing_on_disk";
       previewEdit.onclick = () => {
@@ -575,8 +677,10 @@
       }
       try {
         const res = await fetch("/api/docs/" + encPath(name));
+        if (gen !== previewGen) return;
         if (sessionEnded(res)) { previewDialog.close(); return; }
         const body = await res.json().catch(() => ({}));
+        if (gen !== previewGen) return;
         if (res.status === 404) {
           previewBody.textContent = "This file is no longer in the library.";
           previewEdit.hidden = true;
@@ -587,7 +691,9 @@
           return;
         }
         previewBody.innerHTML = renderMarkdown(body.body || "");
+        setPreviewAsks(name, typeof body.body === "string" ? body.body : "");
       } catch (err) {
+        if (gen !== previewGen) return;
         previewBody.textContent = OFFLINE_MSG;
       }
     }
@@ -981,6 +1087,35 @@
       await refreshReview();
     }
 
+    async function reindexOne(name) {
+      if (!confirm("Re-index this file? Search updates for this file only.")) return;
+      if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
+      setRebuildLock(true);
+      setLibStatus("Rebuilding…");
+      try {
+        const res = await fetch("/api/reindex", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths: [name] }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (sessionEnded(res)) return;
+        if (res.status === 409) {
+          setLibStatus("Index is rebuilding. Try again when it finishes.", "err");
+          startRebuildPoll();
+          return;
+        }
+        setRebuildLock(false);
+        await refreshAll();
+        if (res.status === 400) setLibStatus(detail(body, "Re-index failed"), "err");
+        else if (!res.ok) setLibStatus(body.detail || "Re-index failed", "err");
+        else setLibStatus("Indexed " + body.num_chunks + " chunks.", "ok");
+      } catch (err) {
+        setLibStatus(OFFLINE_MSG, "err");
+        startRebuildPoll();
+      }
+    }
+
     async function removeDoc(name) {
       if (!confirm("Stage deletion of " + name + "? It stays on disk and searchable until you approve it and re-index.")) return;
       if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
@@ -1061,6 +1196,7 @@
       if (isOffline()) { setLibStatus(OFFLINE_MSG, "err"); return; }
       const fd = new FormData();
       for (const file of files) fd.append("files", file);
+      if (folder !== "all") fd.append("folder", folder);
       try {
         const res = await fetch("/api/docs", { method: "POST", body: fd });
         fileInput.value = "";
@@ -1267,6 +1403,11 @@
       lockReveal.setAttribute("aria-label", show ? "Hide password" : "Show password");
     });
     previewClose.addEventListener("click", () => previewDialog.close());
+    previewBody.addEventListener("click", (event) => {
+      const link = event.target.closest("button.wikilink");
+      if (!link || !previewBody.contains(link) || !link.dataset.path) return;
+      openPreview(link.dataset.path);
+    });
     bindLightDismiss(previewDialog);
     bindLightDismiss(renameDialog);
     draft.addEventListener("input", () => paintDiff(draftDiff, liveBody, draft.value));
