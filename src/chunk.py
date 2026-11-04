@@ -114,6 +114,39 @@ def markdown_paths(docs_dir: Path) -> list[tuple[Path, str]]:
     return found
 
 
+def windowed_chunks(
+    body: str,
+    *,
+    source_file: str,
+    heading: str,
+    id_stem: str,
+    section_index: int,
+) -> list[Chunk]:
+    """Split one already-headed section with the markdown window rule.
+
+    PDF pages call this too. They do not go through `_split_into_sections`,
+    so a line that looks like `## ` stays inside the page. A blank body
+    returns no chunks.
+    """
+    chunks = []
+    spans = _window_spans(body, CHUNK_SIZE, CHUNK_OVERLAP)
+    for j, (start, end) in enumerate(spans):
+        piece = body[start:end]
+        if not piece.strip():
+            continue
+        excerpt = _section_excerpt(body, start).strip()
+        chunks.append(
+            Chunk(
+                text=f"{heading}\n{piece.strip()}",
+                source_file=source_file,
+                heading=heading,
+                chunk_id=f"{id_stem}_{section_index}_{j}",
+                section_text=f"{heading}\n{excerpt}",
+            )
+        )
+    return chunks
+
+
 def chunk_document(path: Path, *, source_file: str | None = None) -> list[Chunk]:
     raw = path.read_text()
     title_match = re.match(r"# (.+)", raw)
@@ -127,21 +160,15 @@ def chunk_document(path: Path, *, source_file: str | None = None) -> list[Chunk]
     chunks = []
     for i, (heading, section_text) in enumerate(sections):
         full_heading = f"{doc_title} > {heading}" if heading else doc_title
-        spans = _window_spans(section_text, CHUNK_SIZE, CHUNK_OVERLAP)
-        for j, (start, end) in enumerate(spans):
-            piece = section_text[start:end]
-            if not piece.strip():
-                continue
-            excerpt = _section_excerpt(section_text, start).strip()
-            chunks.append(
-                Chunk(
-                    text=f"{full_heading}\n{piece.strip()}",
-                    source_file=rel,
-                    heading=full_heading,
-                    chunk_id=f"{id_stem}_{i}_{j}",
-                    section_text=f"{full_heading}\n{excerpt}",
-                )
+        chunks.extend(
+            windowed_chunks(
+                section_text,
+                source_file=rel,
+                heading=full_heading,
+                id_stem=id_stem,
+                section_index=i,
             )
+        )
     return chunks
 
 

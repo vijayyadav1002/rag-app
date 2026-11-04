@@ -86,6 +86,8 @@ _PUBLIC_GET = frozenset(
         "/",
         "/library",
         "/app.css",
+        "/render.js",
+        "/vendor/mermaid.min.js",
         "/manifest.webmanifest",
         "/sw.js",
         "/api/session",

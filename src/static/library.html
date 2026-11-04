@@ -50,16 +50,16 @@
     <section class="archive-head">
       <p class="archive-kicker">Internal knowledge archive</p>
       <h1>Document index</h1>
-      <p class="deck">Markdown in the mounted corpus. Search changes only after Approve, then Re-index.</p>
+      <p class="deck">Markdown, PDF, and images in the mounted corpus. Search changes only after Approve, then Re-index.</p>
       <div class="archive-tools">
         <span class="stat"><strong id="file-count">0</strong> files</span>
         <span class="stat"><strong id="chunk-count">—</strong> chunks</span>
         <span class="stat" id="ready-flag">—</span>
-        <button type="button" id="upload">Upload .md</button>
+        <button type="button" id="upload">Upload</button>
         <button type="button" id="reindex">Re-index</button>
       </div>
       <p id="lib-status">Loading documents…</p>
-      <input id="doc-file" type="file" accept=".md,text/markdown" multiple />
+      <input id="doc-file" type="file" accept=".md,.pdf,.png,.jpg,.jpeg,.gif,.webp,text/markdown" multiple />
     </section>
 
     <section class="panel" id="review-panel">
@@ -91,10 +91,10 @@
     </section>
 
     <section class="panel" id="ingest">
-      <h2>Add markdown</h2>
+      <h2>Add files</h2>
       <div class="drop-zone" id="drop-zone">
-        <p>Drop Markdown files here, or <button type="button" id="browse-files">browse</button></p>
-        <p class="fine">MARKDOWN ONLY · 1 MB EACH · UP TO 20 FILES · UPLOAD LANDS AT THE CORPUS ROOT</p>
+        <p>Drop Markdown, PDF, or images here, or <button type="button" id="browse-files">browse</button></p>
+        <p class="fine">MARKDOWN 1 MB · IMAGES AND PDF 8 MB · UP TO 20 FILES</p>
       </div>
       <form id="new-note-form" class="new-note">
         <label>Folder
@@ -165,6 +165,8 @@
     </div>
   </dialog>
 
+  <script src="/vendor/mermaid.min.js"></script>
+  <script src="/render.js"></script>
   <script>
     const libStatus = document.getElementById("lib-status");
     const docList = document.getElementById("doc-list");
@@ -223,6 +225,7 @@
       changed: "changed",
       not_indexed: "not indexed",
       missing_on_disk: "missing on disk",
+      asset: "file",
     };
     const SESSION_ENDED = "Session ended. Enter the password.";
     const STORE_MSG = "Could not store the session.";
@@ -258,140 +261,35 @@
       return !navigator.onLine;
     }
 
-    function escapeHtml(text) {
-      return String(text).replace(/[&<>"']/g, (ch) =>
-        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])
-      );
+    function noteNames() {
+      return lastDocs
+        .filter((doc) => doc && typeof doc.name === "string" && doc.kind !== "image" && doc.kind !== "pdf")
+        .map((doc) => doc.name);
     }
 
-    function unescapeHtml(text) {
-      return text
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&amp;/g, "&");
+    function mediaNames() {
+      return lastDocs
+        .filter((doc) => doc && (doc.kind === "image" || doc.kind === "pdf") && typeof doc.name === "string")
+        .map((doc) => doc.name);
     }
 
-    function posixStem(path) {
-      const parts = String(path).split("/").filter((part) => part.length > 0);
-      const base = parts.length ? parts[parts.length - 1] : "";
-      const dot = base.lastIndexOf(".");
-      if (dot <= 0) return base;
-      return base.slice(0, dot);
-    }
-
-    function resolveWikilink(target, names) {
-      if (typeof target !== "string" || !Array.isArray(names)) return null;
-      let raw = target.split("|")[0];
-      raw = raw.split("#")[0].trim();
-      if (!raw || raw.includes("\0") || raw.includes("\\")) return null;
-      if (raw.startsWith("/")) return null;
-      const parts = raw.split("/").filter((part) => part.length > 0);
-      if (!parts.length || parts.some((part) => part === "." || part === ".." || part.startsWith("."))) return null;
-      const want = parts.join("/");
-      const lowered = new Map();
-      for (const name of names) {
-        if (typeof name !== "string") continue;
-        lowered.set(name.toLowerCase(), name);
-      }
-      const withMd = want.toLowerCase().endsWith(".md") ? want : want + ".md";
-      const exact = lowered.get(want.toLowerCase()) || lowered.get(withMd.toLowerCase());
-      if (exact) return exact;
-      const stem = posixStem(want).toLowerCase();
-      const stems = names.filter((name) => typeof name === "string" && posixStem(name).toLowerCase() === stem);
-      if (stems.length === 1) return stems[0];
-      return null;
-    }
-
-    function wikilinkNames() {
-      return lastDocs.map((doc) => doc && doc.name).filter((name) => typeof name === "string");
-    }
-
-    function linkifyWikilinks(escaped) {
-      // Match raw text. escapeHtml writes ' as &#39;, and that # would end the target.
-      const raw = unescapeHtml(escaped);
-      const re = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
-      let out = "";
-      let last = 0;
-      let match;
-      while ((match = re.exec(raw))) {
-        const offset = match.index;
-        const embed = offset > 0 && raw[offset - 1] === "!";
-        const target = match[1];
-        const alias = match[2];
-        const path = embed ? null : resolveWikilink(target, wikilinkNames());
-        if (!path) continue;
-        out += escapeHtml(raw.slice(last, offset));
-        const label = alias != null ? alias : target;
-        out += `<button type="button" class="wikilink" data-path="${escapeHtml(path)}">${escapeHtml(label)}</button>`;
-        last = offset + match[0].length;
-      }
-      out += escapeHtml(raw.slice(last));
-      return out;
-    }
-
-    function renderInline(text) {
-      const bits = [];
-      const re = /`([^`]+)`/g;
-      let last = 0;
-      let match;
-      while ((match = re.exec(text))) {
-        bits.push({ t: "text", v: text.slice(last, match.index) });
-        bits.push({ t: "code", v: match[1] });
-        last = match.index + match[0].length;
-      }
-      bits.push({ t: "text", v: text.slice(last) });
-      return bits.map((bit) => {
-        if (bit.t === "code") return `<code>${escapeHtml(bit.v)}</code>`;
-        let s = escapeHtml(bit.v);
-        s = linkifyWikilinks(s);
-        s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-        s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
-        return s;
-      }).join("");
-    }
-
-    function renderMarkdown(src) {
-      const fences = [];
-      let text = String(src || "").replace(/\r\n/g, "\n");
-      text = text.replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => {
-        const n = fences.length;
-        fences.push(`<pre tabindex="0"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
-        return "\n\n%%FENCE" + n + "%%\n\n";
+    function renderMarkdown(src, sourceFile) {
+      return window.Northwind.renderMarkdown(src, {
+        sourceFile: sourceFile || "",
+        names: mediaNames(),
+        noteNames: noteNames(),
+        citations: false,
+        mermaid: "draw",
       });
-      const lines = text.split("\n");
-      const out = [];
-      let i = 0;
-      while (i < lines.length) {
-        const line = lines[i];
-        if (/^\s*$/.test(line)) { i += 1; continue; }
-        const fence = line.trim().match(/^%%FENCE(\d+)%%$/);
-        if (fence) { out.push(fences[Number(fence[1])]); i += 1; continue; }
-        const heading = line.match(/^(#{1,3})\s+(.+)$/);
-        if (heading) {
-          const n = heading[1].length;
-          out.push(`<h${n}>${renderInline(heading[2].trim())}</h${n}>`);
-          i += 1;
-          continue;
-        }
-        if (/^\s*[-*+]\s+/.test(line)) {
-          const items = [];
-          while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-            items.push(`<li>${renderInline(lines[i].replace(/^\s*[-*+]\s+/, ""))}</li>`);
-            i += 1;
-          }
-          out.push(`<ul>${items.join("")}</ul>`);
-          continue;
-        }
-        const para = [];
-        while (i < lines.length && lines[i].trim() && !/^(#{1,3})\s+/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^%%FENCE\d+%%$/.test(lines[i].trim())) {
-          para.push(lines[i]);
-          i += 1;
-        }
-        out.push(`<p>${renderInline(para.join("\n")).replace(/\n/g, "<br>")}</p>`);
-      }
-      return out.join("");
+    }
+
+    function docKind(doc) {
+      if (!doc) return "note";
+      if (doc.kind === "image" || doc.kind === "pdf") return doc.kind;
+      const name = String(doc.name || "").toLowerCase();
+      if (name.endsWith(".pdf")) return "pdf";
+      if (/\.(png|jpe?g|gif|webp)$/.test(name)) return "image";
+      return "note";
     }
 
     function topFolder(name) {
@@ -504,12 +402,12 @@
       if (!lastDocs.length) {
         const empty = document.createElement("p");
         empty.className = "doc-meta";
-        empty.textContent = "No markdown files.";
+        empty.textContent = "No documents.";
         docList.append(empty);
       } else if (!slice.length) {
         const empty = document.createElement("p");
         empty.className = "doc-meta";
-        empty.textContent = "No markdown files match.";
+        empty.textContent = "No documents match.";
         docList.append(empty);
       } else {
         for (const doc of slice) {
@@ -530,6 +428,7 @@
           if (when) bits.push(when);
           const size = formatSize(doc.size);
           if (size) bits.push(size);
+          if (typeof doc.warning === "string" && doc.warning) bits.push(doc.warning);
           meta.textContent = bits.join(" · ");
           main.append(title, meta);
           const actions = document.createElement("div");
@@ -577,8 +476,13 @@
           fileReindex.textContent = "Re-index file";
           fileReindex.disabled = rebuilding;
           fileReindex.addEventListener("click", () => reindexOne(doc.name));
-          actions.append(view, ask, fileReindex);
-          if (doc.state !== "missing_on_disk") actions.append(edit, move, del);
+          const kind = docKind(doc);
+          actions.append(view);
+          if (kind !== "image") actions.append(ask, fileReindex);
+          if (doc.state !== "missing_on_disk") {
+            if (kind === "note") actions.append(edit, move);
+            actions.append(del);
+          }
           row.append(main, actions);
           docList.append(row);
         }
@@ -629,7 +533,10 @@
           row.scrollIntoView({ block: "center" });
         }
         const doc = lastDocs.find((item) => item.name === name);
-        if (doc && doc.state !== "missing_on_disk") editDoc(name);
+        if (doc && doc.state !== "missing_on_disk") {
+          if (docKind(doc) === "note") editDoc(name);
+          else openPreview(name);
+        }
       }
     }
 
@@ -665,12 +572,26 @@
       previewMeta.textContent = bits.join(" · ") || "View only";
       setPreviewAsks(name, "");
       previewBody.textContent = "Loading…";
-      previewEdit.hidden = !doc || doc.state === "missing_on_disk";
+      const kind = docKind(doc || { name: name });
+      previewEdit.hidden = kind !== "note" || !doc || doc.state === "missing_on_disk";
       previewEdit.onclick = () => {
         previewDialog.close();
         editDoc(name);
       };
       if (!previewDialog.open) previewDialog.showModal();
+      if (kind === "image" || kind === "pdf") {
+        previewBody.replaceChildren();
+        const node = document.createElement(kind === "pdf" ? "iframe" : "img");
+        if (kind === "pdf") {
+          node.className = "media-frame";
+          node.title = name;
+        } else {
+          node.alt = name;
+        }
+        node.src = "/api/media/" + encPath(name);
+        previewBody.append(node);
+        return;
+      }
       if (isOffline()) {
         previewBody.textContent = OFFLINE_MSG;
         return;
@@ -690,7 +611,8 @@
           previewBody.textContent = detail(body, "Could not open the file.");
           return;
         }
-        previewBody.innerHTML = renderMarkdown(body.body || "");
+        previewBody.innerHTML = renderMarkdown(body.body || "", name);
+        if (window.Northwind) Northwind.drawMermaid(previewBody);
         setPreviewAsks(name, typeof body.body === "string" ? body.body : "");
       } catch (err) {
         if (gen !== previewGen) return;
@@ -942,7 +864,8 @@
         op.textContent = item.op === "delete" ? "Delete" : item.op === "rename" ? "Move" : "Update";
         const origin = document.createElement("span");
         origin.className = "state";
-        origin.textContent = item.origin === "ai" ? "Formatted" : "Hand edit";
+        const mediaKind = item.kind === "image" || item.kind === "pdf";
+        origin.textContent = mediaKind ? (item.kind === "pdf" ? "PDF" : "Image") : (item.origin === "ai" ? "Formatted" : "Hand edit");
         row.append(left, op, origin);
         if (item.format_error) {
           const failed = document.createElement("span");
@@ -950,7 +873,7 @@
           failed.textContent = "Formatting failed";
           row.append(failed);
         }
-        if (item.op === "upsert") {
+        if (item.op === "upsert" && !mediaKind) {
           const edit = document.createElement("button");
           edit.type = "button";
           edit.className = "ghost";
@@ -980,6 +903,11 @@
           const note = document.createElement("p");
           note.className = "doc-meta diff-wrap";
           note.textContent = "Approve removes this file.";
+          row.append(note);
+        } else if (mediaKind) {
+          const note = document.createElement("p");
+          note.className = "doc-meta diff-wrap";
+          note.textContent = "Approve adds this file. Search updates after Re-index.";
           row.append(note);
         } else {
           queueDiff(row, item, reviewGen);
@@ -1139,6 +1067,11 @@
     }
 
     async function editDoc(name) {
+      const known = lastDocs.find((item) => item.name === name);
+      if (docKind(known || { name: name }) !== "note") {
+        openPreview(name);
+        return;
+      }
       const pending = proposals.find((item) => item.target === name);
       if (pending && pending.op === "delete") {
         reviewStatus.textContent = "Reject the pending delete before editing this file.";

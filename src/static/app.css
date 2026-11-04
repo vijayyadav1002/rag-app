@@ -835,3 +835,38 @@ dialog::backdrop {
   .library-wrap { padding: 1rem 0.8rem 2.5rem; }
   #preview { margin: 0; width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
 }
+.excerpt-diagrams {
+  margin: 0.35rem 0 0.55rem;
+}
+.turn .answer .diagram,
+.preview-body .diagram,
+.chunk .diagram {
+  overflow: auto;
+  margin: 0.7em 0;
+}
+.turn .answer .diagram svg,
+.preview-body .diagram svg,
+.chunk .diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.turn .answer img,
+.preview-body img,
+.excerpt-media img,
+.md-media img {
+  max-width: 100%;
+  height: auto;
+}
+.media-frame {
+  width: 100%;
+  min-height: 24rem;
+  border: 0;
+  background: var(--inset);
+}
+.excerpt-media,
+.md-media {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.6rem 0;
+}

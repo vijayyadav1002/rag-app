@@ -22,8 +22,15 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from chunk import chunk_directory, chunk_document, resolve_docs_dir
-from library import file_digest, safe_md_relpath
+from chunk import resolve_docs_dir
+from library import file_digest
+from media import (
+    MediaPathError,
+    PdfExtractError,
+    collect_corpus,
+    collect_named,
+    indexable_relpath,
+)
 
 EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 DOCUMENT_PREFIX = "search_document: "
@@ -61,10 +68,22 @@ def _publish(index_dir: Path, index, chunks, config) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _plan(docs_dir: Path, named: tuple[str, ...] | None):
+    try:
+        if named is None:
+            return collect_corpus(docs_dir)
+        return collect_named(docs_dir, named)
+    except PdfExtractError as exc:
+        raise IndexBuildError(f"{exc} The index was not replaced.") from exc
+    except MediaPathError as exc:
+        raise IndexBuildError(f"{exc} The index was not replaced.") from exc
+
+
 def build(docs_dir: Path | None = None, index_dir: Path | None = None) -> dict:
     docs_dir = resolve_docs_dir() if docs_dir is None else docs_dir
     index_dir = INDEX_DIR if index_dir is None else index_dir
-    chunks = chunk_directory(docs_dir)
+    corpus = _plan(docs_dir, None)
+    chunks = list(corpus.chunks)
     if not chunks:
         raise IndexBuildError("No chunks to index.")
 
@@ -73,7 +92,7 @@ def build(docs_dir: Path | None = None, index_dir: Path | None = None) -> dict:
     index = faiss.IndexFlatIP(embeddings.shape[1])
     index.add(embeddings)
 
-    files = sorted({c.source_file for c in chunks})
+    files = list(corpus.files)
     digests = {
         rel: file_digest(docs_dir / rel)
         for rel in files
@@ -85,6 +104,7 @@ def build(docs_dir: Path | None = None, index_dir: Path | None = None) -> dict:
         "indexed_at": datetime.now(timezone.utc).isoformat(),
         "files": files,
         "digests": digests,
+        "warnings": {rel: message for rel, message in corpus.warnings},
     }
 
     _publish(index_dir, index, chunks, config)
@@ -100,7 +120,10 @@ def rebuild_paths(
     index_dir: Path | None = None,
     encode=None,
 ) -> dict:
-    rels = sorted({safe_md_relpath(raw) for raw in paths})
+    try:
+        rels = sorted({indexable_relpath(raw) for raw in paths})
+    except MediaPathError as exc:
+        raise IndexBuildError(str(exc)) from exc
     if not rels:
         raise IndexBuildError("No files to re-index.")
     docs_dir = resolve_docs_dir() if docs_dir is None else docs_dir
@@ -136,11 +159,8 @@ def rebuild_paths(
         kept_chunks.append(chunk)
         kept_rows.append(np.asarray(index.reconstruct(i), dtype="float32"))
 
-    new_chunks = []
-    for rel in rels:
-        path = docs_dir / rel
-        if path.is_file():
-            new_chunks.extend(chunk_document(path, source_file=rel))
+    named = _plan(docs_dir, tuple(rels))
+    new_chunks = list(named.chunks)
 
     if not kept_chunks and not new_chunks:
         raise IndexBuildError("No chunks to index.")
@@ -191,12 +211,34 @@ def rebuild_paths(
         path = docs_dir / rel
         if path.is_file():
             digests[rel] = file_digest(path)
+    previous_files = config.get("files")
+    published_files = set()
+    if isinstance(previous_files, list):
+        for item in previous_files:
+            if isinstance(item, str) and item not in requested:
+                published_files.add(item)
+    for chunk in all_chunks:
+        if isinstance(chunk.source_file, str):
+            published_files.add(chunk.source_file)
+    published_files.update(named.files)
+    previous_warnings = config.get("warnings")
+    warnings = dict(previous_warnings) if isinstance(previous_warnings, dict) else {}
+    for rel in rels:
+        warnings.pop(rel, None)
+    for rel, message in named.warnings:
+        warnings[rel] = message
+    warnings = {
+        rel: message
+        for rel, message in warnings.items()
+        if isinstance(rel, str) and isinstance(message, str) and rel in published_files
+    }
     published = {
         "embedding_model": EMBEDDING_MODEL,
         "num_chunks": len(all_chunks),
         "indexed_at": datetime.now(timezone.utc).isoformat(),
-        "files": sorted({c.source_file for c in all_chunks}),
+        "files": sorted(published_files),
         "digests": digests,
+        "warnings": warnings,
     }
     _publish(index_dir, fresh, all_chunks, published)
     return published

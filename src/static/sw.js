@@ -1,8 +1,10 @@
-const CACHE = "ask-northwind-v17";
+const CACHE = "ask-northwind-v19";
 const SHELL = [
   "/",
   "/library",
   "/app.css",
+  "/render.js",
+  "/vendor/mermaid.min.js",
   "/manifest.webmanifest",
   "/sw.js",
   "/icons/icon-192.png",
@@ -11,7 +13,11 @@ const SHELL = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())
+    caches.open(CACHE).then(async (cache) => {
+      const required = SHELL.filter((path) => path !== "/vendor/mermaid.min.js");
+      await cache.addAll(required);
+      await cache.add("/vendor/mermaid.min.js").catch(() => {});
+    }).then(() => self.skipWaiting())
   );
 });
 

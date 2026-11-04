@@ -24,7 +24,8 @@ from dotenv import load_dotenv
 # Shell exports take precedence (override=False). Missing file is a no-op.
 load_dotenv(Path(__file__).parent / ".env")
 
-MAX_TOKENS = 500
+# 1200 leaves room for one mermaid fence. The rewrite stays at 80 tokens.
+MAX_TOKENS = 1200
 
 # Preset name → driver + defaults. "openai" means the protocol, not the company.
 PROVIDERS = {
