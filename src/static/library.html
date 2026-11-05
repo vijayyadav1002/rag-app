@@ -572,6 +572,7 @@
       previewMeta.textContent = bits.join(" · ") || "View only";
       setPreviewAsks(name, "");
       previewBody.textContent = "Loading…";
+      previewBody.scrollTop = 0;
       const kind = docKind(doc || { name: name });
       previewEdit.hidden = kind !== "note" || !doc || doc.state === "missing_on_disk";
       previewEdit.onclick = () => {
@@ -590,10 +591,12 @@
         }
         node.src = "/api/media/" + encPath(name);
         previewBody.append(node);
+        previewBody.scrollTop = 0;
         return;
       }
       if (isOffline()) {
         previewBody.textContent = OFFLINE_MSG;
+        previewBody.scrollTop = 0;
         return;
       }
       try {
@@ -604,19 +607,23 @@
         if (gen !== previewGen) return;
         if (res.status === 404) {
           previewBody.textContent = "This file is no longer in the library.";
+          previewBody.scrollTop = 0;
           previewEdit.hidden = true;
           return;
         }
         if (!res.ok) {
           previewBody.textContent = detail(body, "Could not open the file.");
+          previewBody.scrollTop = 0;
           return;
         }
         previewBody.innerHTML = renderMarkdown(body.body || "", name);
+        previewBody.scrollTop = 0;
         if (window.Northwind) Northwind.drawMermaid(previewBody);
         setPreviewAsks(name, typeof body.body === "string" ? body.body : "");
       } catch (err) {
         if (gen !== previewGen) return;
         previewBody.textContent = OFFLINE_MSG;
+        previewBody.scrollTop = 0;
       }
     }
 

@@ -588,7 +588,7 @@ mark.support { background: var(--amber-soft); color: inherit; }
 #reconnect.show { display: inline-flex; }
 
 .library-wrap {
-  max-width: 72rem;
+  max-width: var(--library-rail);
   margin: 0 auto;
   padding: 1.4rem 1.25rem 3rem;
 }
@@ -834,6 +834,96 @@ dialog::backdrop {
   .context-order { display: none; }
   .library-wrap { padding: 1rem 0.8rem 2.5rem; }
   #preview { margin: 0; width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+}
+
+/* Library preview covers the viewport. Ask keeps the #preview sheet above.
+   max-width/max-height: none clears the user-agent dialog:modal cap. */
+body.library-page {
+  --library-measure: 68ch;
+  --library-rail: 72rem;
+}
+body.library-page #preview {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  width: auto;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: var(--bg);
+}
+body.library-page #preview .sheet {
+  container-type: inline-size;
+  container-name: library-preview;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+body.library-page #preview .sheet header {
+  align-items: start;
+  padding-top: max(0.8rem, env(safe-area-inset-top));
+}
+body.library-page #preview .sheet header > div { min-width: 0; flex: 1; }
+body.library-page #preview #preview-asks {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-width: 100%;
+}
+body.library-page #preview #preview-asks:empty { display: none; }
+body.library-page #preview #preview-asks a {
+  flex: none;
+  white-space: nowrap;
+}
+body.library-page #preview .sheet footer { justify-content: flex-end; }
+body.library-page #preview .sheet footer:has(#preview-edit[hidden]) { display: none; }
+body.library-page #preview .sheet footer:not([hidden]) {
+  padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
+}
+body.library-page #preview .preview-body {
+  min-height: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  line-height: 1.6;
+  padding-block: 1.35rem 2.75rem;
+  padding-inline: max(1.25rem, calc((100% - var(--library-measure)) / 2));
+}
+body.library-page #preview .preview-body pre { line-height: 1.45; }
+body.library-page #preview .preview-body > :is(pre, table, .diagram, .md-media) {
+  width: min(var(--library-rail), 100cqi);
+  max-width: min(var(--library-rail), 100cqi);
+  margin-inline: calc((100% - min(var(--library-rail), 100cqi)) / 2);
+}
+body.library-page #preview .preview-body:has(> .media-frame:only-child) {
+  padding: 0;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+body.library-page #preview .preview-body:has(> .media-frame:only-child) > .media-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  display: block;
+}
+body.library-page #preview .preview-body:has(> img:only-child) {
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+body.library-page #preview .preview-body:has(> img:only-child) > img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  margin: 0;
+  object-fit: contain;
 }
 .excerpt-diagrams {
   margin: 0.35rem 0 0.55rem;
