@@ -50,8 +50,21 @@ from library import (
     list_docs,
     read_doc,
     safe_folder,
-    safe_md_relpath,
     search_phrases,
+)
+from media import (
+    MEDIA_TYPES,
+    MediaPathError,
+    MediaTooLarge,
+    approve_media,
+    indexable_relpath,
+    inline_filename,
+    open_media,
+    pending_media,
+    reject_media,
+    stage_delete as stage_media_delete,
+    stage_media,
+    upload_kind,
 )
 from llm import LLMConfigError
 from review import (
@@ -314,7 +327,7 @@ def _status_body() -> dict:
         "rebuilding": _rebuilding,
         "indexed_at": meta.get("indexed_at"),
         "num_chunks": meta.get("num_chunks"),
-        "stale": any(row["state"] != "indexed" for row in docs),
+        "stale": any(row["state"] not in {"indexed", "asset"} for row in docs),
     }
 
 
@@ -322,17 +335,34 @@ def _docs_body() -> dict:
     docs = list_docs()
     proposals, _unreadable = list_proposals()
     pending = {item.target for item in proposals}
+    pending.update(item.rel for item in pending_media())
     for row in docs:
         row["pending"] = row["name"] in pending
     return {**_status_body(), "docs": docs}
 
 
+def _media_review_row(item) -> dict:
+    return {
+        "target": item.rel,
+        "op": item.op,
+        "body": "",
+        "origin": "manual",
+        "base_mtime": None,
+        "base_mtime_ns": None,
+        "updated_at": "",
+        "format_error": None,
+        "dest": None,
+        "base_digest": None,
+        "kind": item.kind,
+    }
+
+
 def _review_body() -> dict:
     proposals, unreadable = list_proposals()
-    return {
-        "proposals": [item.as_dict() for item in proposals],
-        "unreadable": unreadable,
-    }
+    rows = [item.as_dict() for item in proposals]
+    rows.extend(_media_review_row(item) for item in pending_media())
+    rows.sort(key=lambda row: row.get("target") or "")
+    return {"proposals": rows, "unreadable": unreadable}
 
 
 def _library_body(errors: list | None = None) -> dict:
@@ -352,7 +382,7 @@ def _raise_review(exc: Exception) -> None:
         raise HTTPException(409, str(exc)) from exc
     if isinstance(exc, FileNotFoundError):
         raise HTTPException(404, "File not found.") from exc
-    if isinstance(exc, (ReviewError, UnsafeNameError, UploadError)):
+    if isinstance(exc, (ReviewError, UnsafeNameError, UploadError, MediaPathError, MediaTooLarge)):
         raise HTTPException(400, str(exc)) from exc
     raise exc
 
@@ -401,6 +431,19 @@ def library_page() -> FileResponse:
 @app.get("/app.css")
 def app_css() -> FileResponse:
     return FileResponse(STATIC_DIR / "app.css", media_type="text/css")
+
+
+@app.get("/render.js")
+def render_js() -> FileResponse:
+    return FileResponse(STATIC_DIR / "render.js", media_type="application/javascript")
+
+
+@app.get("/vendor/mermaid.min.js")
+def mermaid_js() -> FileResponse:
+    path = STATIC_DIR / "vendor" / "mermaid.min.js"
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, media_type="application/javascript")
 
 
 @app.post("/api/session")
@@ -481,6 +524,25 @@ def api_docs(q: str = "", suggest: str | None = None) -> dict:
     return body
 
 
+@app.get("/api/media/{name:path}")
+def api_media(name: str) -> Response:
+    try:
+        opened = open_media(name)
+    except MediaPathError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "File not found.") from exc
+    return Response(
+        content=opened.body,
+        media_type=opened.content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": inline_filename(opened.filename),
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 @app.get("/api/docs/{name:path}")
 def api_read_doc(name: str) -> dict:
     try:
@@ -498,7 +560,7 @@ async def api_upload(
 ):
     _unlocked()
     if not files or len(files) > MAX_UPLOAD_FILES:
-        raise HTTPException(400, "Send between 1 and 20 markdown files.")
+        raise HTTPException(400, "Send between 1 and 20 files.")
     if folder.strip():
         try:
             safe_folder(folder)
@@ -508,8 +570,12 @@ async def api_upload(
     for uf in files:
         data = await uf.read()
         try:
-            stage_upload(uf.filename or "", data, folder=folder)
-        except UploadError as exc:
+            kind = upload_kind(uf.filename or "")
+            if kind == "markdown":
+                stage_upload(uf.filename or "", data, folder=folder)
+            else:
+                stage_media(uf.filename or "", data, folder=folder)
+        except (UploadError, MediaPathError, MediaTooLarge, UnsafeNameError) as exc:
             errors.append({"name": uf.filename or "", "message": str(exc)})
     if errors and len(errors) == len(files):
         return JSONResponse(status_code=400, content=_library_body(errors))
@@ -522,8 +588,11 @@ async def api_upload(
 def api_delete(name: str):
     _unlocked()
     try:
-        stage_delete(name)
-    except UnsafeNameError as exc:
+        if Path(name).suffix.lower() in MEDIA_TYPES:
+            stage_media_delete(name)
+        else:
+            stage_delete(name)
+    except (UnsafeNameError, MediaPathError, MediaTooLarge) as exc:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(404, "File not found.") from exc
@@ -590,7 +659,10 @@ def api_format(name: str):
 def api_approve(name: str):
     _unlocked()
     try:
-        approve_proposal(name)
+        if Path(name).suffix.lower() in MEDIA_TYPES:
+            approve_media(name)
+        else:
+            approve_proposal(name)
     except Exception as exc:
         _raise_review(exc)
     return _library_body()
@@ -600,7 +672,10 @@ def api_approve(name: str):
 def api_reject(name: str):
     _unlocked()
     try:
-        reject_proposal(name)
+        if Path(name).suffix.lower() in MEDIA_TYPES:
+            reject_media(name)
+        else:
+            reject_proposal(name)
     except Exception as exc:
         _raise_review(exc)
     return _library_body()
@@ -622,8 +697,8 @@ async def api_reindex(request: Request):
     try:
         paths = reindex_paths(payload)
         if paths is not None:
-            paths = [safe_md_relpath(name) for name in paths]
-    except UnsafeNameError as exc:
+            paths = [indexable_relpath(name) for name in paths]
+    except (UnsafeNameError, MediaPathError) as exc:
         raise HTTPException(400, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

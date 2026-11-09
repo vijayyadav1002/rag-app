@@ -3,7 +3,8 @@
 A multipart `folder` prefixes the basename. A missing folder still writes
 the root. Upload accepts basenames only (no slashes). Delete and list use
 posix-relative paths so nested files already on disk can be shown and
-removed. The chunker only reads markdown. Upload and delete only touch
+removed. The chunker reads markdown. PDF text is read by media.py. Images are
+listed and served, not embedded. Upload and delete only touch
 files on disk. They do not rebuild FAISS — search still reads index/
 until someone calls build() + reload(). List marks an indexed file
 `changed` when its bytes differ from the digest stored at index time. An
@@ -143,7 +144,7 @@ def index_meta(index_dir: Path | None = None) -> dict:
     index_dir = index_dir or INDEX_DIR
     path = index_dir / "config.json"
     if not path.exists():
-        return {"indexed_at": None, "num_chunks": None, "files": [], "digests": {}}
+        return {"indexed_at": None, "num_chunks": None, "files": [], "digests": {}, "warnings": {}}
     with open(path) as f:
         cfg = json.load(f)
     files = cfg.get("files") or []
@@ -155,11 +156,18 @@ def index_meta(index_dir: Path | None = None) -> dict:
         for key, digest in raw.items():
             if isinstance(key, str) and isinstance(digest, str) and len(digest) == 64:
                 digests[key] = digest
+    raw_warnings = cfg.get("warnings") or {}
+    warnings: dict[str, str] = {}
+    if isinstance(raw_warnings, dict):
+        for key, message in raw_warnings.items():
+            if isinstance(key, str) and isinstance(message, str) and message:
+                warnings[key] = message
     return {
         "indexed_at": cfg.get("indexed_at"),
         "num_chunks": cfg.get("num_chunks"),
         "files": [str(x) for x in files],
         "digests": digests,
+        "warnings": warnings,
     }
 
 
@@ -216,14 +224,29 @@ def chunk_counts(index_dir: Path | None = None) -> dict[str, int] | None:
     return counts
 
 
+def _row_kind(name: str, kinds: dict[str, str]) -> str:
+    if name in kinds:
+        return kinds[name]
+    lower = name.lower()
+    if lower.endswith(".pdf"):
+        return "pdf"
+    if lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+        return "image"
+    return "note"
+
+
 def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> list[dict]:
+    from media import ASSET_STATE, media_paths
+
     docs_dir = docs_dir or DOCS_DIR
     meta = index_meta(index_dir)
     counts = chunk_counts(index_dir)
     indexed = set(meta["files"])
     indexed_at = _parse_time(meta.get("indexed_at"))
     digests = meta.get("digests") or {}
+    warnings = meta.get("warnings") or {}
     disk = {}
+    kinds: dict[str, str] = {}
     for path, rel in markdown_paths(docs_dir):
         st = path.stat()
         disk[rel] = {
@@ -232,9 +255,25 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
             "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
             "path": path,
         }
+        kinds[rel] = "note"
+    for item in media_paths(docs_dir):
+        st = item.path.stat()
+        disk[item.rel] = {
+            "name": item.rel,
+            "size": st.st_size,
+            "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+            "path": item.path,
+        }
+        kinds[item.rel] = item.kind
     names = sorted(set(disk) | indexed)
     rows = []
     for name in names:
+        kind = _row_kind(name, kinds)
+        warning = warnings.get(name) if isinstance(warnings, dict) else None
+        if kind == "image" and name in disk:
+            row = {key: value for key, value in disk[name].items() if key != "path"}
+            rows.append({**row, "state": ASSET_STATE, "chunk_count": None, "kind": "image"})
+            continue
         if name in disk:
             state = "indexed" if name in indexed else "not_indexed"
             recorded = digests.get(name)
@@ -250,17 +289,19 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
                 if indexed_at is not None and mtime is not None and mtime > indexed_at:
                     state = "changed"
             row = {key: value for key, value in disk[name].items() if key != "path"}
-            rows.append({**row, "state": state, "chunk_count": _chunk_count(counts, name)})
+            row = {**row, "state": state, "chunk_count": _chunk_count(counts, name), "kind": kind}
         else:
-            rows.append(
-                {
-                    "name": name,
-                    "size": 0,
-                    "mtime": None,
-                    "state": "missing_on_disk",
-                    "chunk_count": _chunk_count(counts, name),
-                }
-            )
+            row = {
+                "name": name,
+                "size": 0,
+                "mtime": None,
+                "state": "missing_on_disk",
+                "chunk_count": _chunk_count(counts, name),
+                "kind": kind,
+            }
+        if isinstance(warning, str) and warning:
+            row["warning"] = warning
+        rows.append(row)
     return rows
 
 

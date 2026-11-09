@@ -56,7 +56,10 @@ Citation numbers in earlier answers belong to those earlier turns. Cite only the
 even when an earlier turn discussed a related topic.
 - Be concise and direct.
 - Format in Markdown (short headings when useful, lists for steps or rules, \
-  **bold** for key numbers or names). Keep citation markers like [1] as plain text, not links."""
+  **bold** for key numbers or names). Keep citation markers like [1] as plain text, not links.
+- If the user asks for a diagram, add one closed mermaid fence based on the excerpts. \
+Otherwise add at most one closed mermaid fence when a diagram makes the answer clearer, \
+and skip it when a sentence is enough. Labels are plain text, with no HTML."""
 
 REWRITE_PROMPT = """You rewrite the follow-up into one standalone question for a document search.
 

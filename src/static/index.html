@@ -140,6 +140,8 @@
     </div>
   </dialog>
 
+  <script src="/vendor/mermaid.min.js"></script>
+  <script src="/render.js"></script>
   <script>
     const form = document.getElementById("ask-form");
     const input = document.getElementById("question");
@@ -212,212 +214,23 @@
     let vaultGen = 0;
     let suggestGen = 0;
 
-    function escapeHtml(text) {
-      return text.replace(/[&<>"']/g, (ch) =>
-        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])
-      );
+    const mediaNames = [];
+    const mediaStates = new Map();
+
+    function renderMarkdown(src, extra) {
+      const opts = {
+        sourceFile: "",
+        names: mediaNames,
+        noteNames: [...fileStates.keys()],
+        citations: true,
+        mermaid: "source",
+      };
+      if (extra) Object.assign(opts, extra);
+      return window.Northwind.renderMarkdown(src, opts);
     }
 
-    function unescapeHtml(text) {
-      return text
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&amp;/g, "&");
-    }
-
-    function posixStem(path) {
-      const parts = String(path).split("/").filter((part) => part.length > 0);
-      const base = parts.length ? parts[parts.length - 1] : "";
-      const dot = base.lastIndexOf(".");
-      if (dot <= 0) return base;
-      return base.slice(0, dot);
-    }
-
-    function resolveWikilink(target, names) {
-      if (typeof target !== "string" || !Array.isArray(names)) return null;
-      let raw = target.split("|")[0];
-      raw = raw.split("#")[0].trim();
-      if (!raw || raw.includes("\0") || raw.includes("\\")) return null;
-      if (raw.startsWith("/")) return null;
-      const parts = raw.split("/").filter((part) => part.length > 0);
-      if (!parts.length || parts.some((part) => part === "." || part === ".." || part.startsWith("."))) return null;
-      const want = parts.join("/");
-      const lowered = new Map();
-      for (const name of names) {
-        if (typeof name !== "string") continue;
-        lowered.set(name.toLowerCase(), name);
-      }
-      const withMd = want.toLowerCase().endsWith(".md") ? want : want + ".md";
-      const exact = lowered.get(want.toLowerCase()) || lowered.get(withMd.toLowerCase());
-      if (exact) return exact;
-      const stem = posixStem(want).toLowerCase();
-      const stems = names.filter((name) => typeof name === "string" && posixStem(name).toLowerCase() === stem);
-      if (stems.length === 1) return stems[0];
-      return null;
-    }
-
-    function wikilinkNames() {
-      return [...fileStates.keys()];
-    }
-
-    function linkifyWikilinks(escaped) {
-      // Match raw text. escapeHtml writes ' as &#39;, and that # would end the target.
-      const raw = unescapeHtml(escaped);
-      const re = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
-      let out = "";
-      let last = 0;
-      let match;
-      while ((match = re.exec(raw))) {
-        const offset = match.index;
-        const embed = offset > 0 && raw[offset - 1] === "!";
-        const target = match[1];
-        const alias = match[2];
-        const path = embed ? null : resolveWikilink(target, wikilinkNames());
-        if (!path) continue;
-        out += escapeHtml(raw.slice(last, offset));
-        const label = alias != null ? alias : target;
-        out += `<button type="button" class="wikilink" data-path="${escapeHtml(path)}">${escapeHtml(label)}</button>`;
-        last = offset + match[0].length;
-      }
-      out += escapeHtml(raw.slice(last));
-      return out;
-    }
-
-    function renderInline(text) {
-      const bits = [];
-      const re = /`([^`]+)`/g;
-      let last = 0;
-      let m;
-      while ((m = re.exec(text))) {
-        bits.push({ t: "text", v: text.slice(last, m.index) });
-        bits.push({ t: "code", v: m[1] });
-        last = m.index + m[0].length;
-      }
-      bits.push({ t: "text", v: text.slice(last) });
-      return bits.map((bit) => {
-        if (bit.t === "code") return `<code>${escapeHtml(bit.v)}</code>`;
-        let s = escapeHtml(bit.v);
-        s = linkifyWikilinks(s);
-        s = s.replace(
-          /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-          (_, label, href) =>
-            `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`
-        );
-        s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-        s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
-        s = s.replace(/\[(\d+)\]/g, '<button type="button" class="cite" data-cite="$1">[$1]</button>');
-        return s;
-      }).join("");
-    }
-
-    function splitTableRow(line) {
-      let s = line.trim();
-      if (s.startsWith("|")) s = s.slice(1);
-      if (s.endsWith("|")) s = s.slice(0, -1);
-      return s.split("|").map((c) => c.trim());
-    }
-
-    function isTableSep(line) {
-      if (!line || !line.includes("-")) return false;
-      const cells = splitTableRow(line);
-      return cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c));
-    }
-
-    function renderMarkdown(src) {
-      const fences = [];
-      let text = String(src || "").replace(/\r\n/g, "\n");
-      text = text.replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => {
-        const i = fences.length;
-        fences.push(`<pre tabindex="0"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
-        return `\n\n%%FENCE${i}%%\n\n`;
-      });
-      const open = text.match(/```[\w-]*\n?([\s\S]*)$/);
-      if (open) {
-        const i = fences.length;
-        fences.push(`<pre tabindex="0"><code>${escapeHtml(open[1])}</code></pre>`);
-        text = text.slice(0, open.index) + `\n\n%%FENCE${i}%%\n\n`;
-      }
-
-      const lines = text.split("\n");
-      const out = [];
-      let i = 0;
-      while (i < lines.length) {
-        const line = lines[i];
-        if (/^\s*$/.test(line)) { i += 1; continue; }
-        const fence = line.trim().match(/^%%FENCE(\d+)%%$/);
-        if (fence) { out.push(fences[Number(fence[1])]); i += 1; continue; }
-        const heading = line.match(/^(#{1,3})\s+(.+)$/);
-        if (heading) {
-          const n = heading[1].length;
-          out.push(`<h${n}>${renderInline(heading[2].trim())}</h${n}>`);
-          i += 1;
-          continue;
-        }
-        if (/^ {0,3}([-*_])\1{2,}\s*$/.test(line)) { out.push("<hr>"); i += 1; continue; }
-        if (/^>\s?/.test(line)) {
-          const quote = [];
-          while (i < lines.length && /^>\s?/.test(lines[i])) {
-            quote.push(lines[i].replace(/^>\s?/, ""));
-            i += 1;
-          }
-          out.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
-          continue;
-        }
-        if (line.includes("|") && isTableSep(lines[i + 1] || "")) {
-          const header = splitTableRow(line);
-          i += 2;
-          const rows = [];
-          while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
-            rows.push(splitTableRow(lines[i]));
-            i += 1;
-          }
-          let html = "<table><thead><tr>" +
-            header.map((h) => `<th>${renderInline(h)}</th>`).join("") +
-            "</tr></thead><tbody>";
-          for (const row of rows) {
-            html += "<tr>" + row.map((c) => `<td>${renderInline(c)}</td>`).join("") + "</tr>";
-          }
-          html += "</tbody></table>";
-          out.push(html);
-          continue;
-        }
-        if (/^\s*[-*+]\s+/.test(line)) {
-          const items = [];
-          while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-            items.push(`<li>${renderInline(lines[i].replace(/^\s*[-*+]\s+/, ""))}</li>`);
-            i += 1;
-          }
-          out.push(`<ul>${items.join("")}</ul>`);
-          continue;
-        }
-        if (/^\s*\d+\.\s+/.test(line)) {
-          const items = [];
-          while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-            items.push(`<li>${renderInline(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`);
-            i += 1;
-          }
-          out.push(`<ol>${items.join("")}</ol>`);
-          continue;
-        }
-        const para = [];
-        while (i < lines.length) {
-          const cur = lines[i];
-          if (/^\s*$/.test(cur)) break;
-          if (/^%%FENCE\d+%%$/.test(cur.trim())) break;
-          if (/^(#{1,3})\s+/.test(cur)) break;
-          if (/^ {0,3}([-*_])\1{2,}\s*$/.test(cur)) break;
-          if (/^>\s?/.test(cur)) break;
-          if (/^\s*[-*+]\s+/.test(cur)) break;
-          if (/^\s*\d+\.\s+/.test(cur)) break;
-          if (cur.includes("|") && isTableSep(lines[i + 1] || "")) break;
-          para.push(cur);
-          i += 1;
-        }
-        out.push(`<p>${renderInline(para.join("\n")).replace(/\n/g, "<br>")}</p>`);
-      }
-      return out.join("");
+    function drawAnswer(el) {
+      if (window.Northwind) window.Northwind.drawMermaid(el);
     }
 
     function encPath(name) {
@@ -1055,7 +868,9 @@
         const chunk = (turn.chunks || []).find((item) => item.n === Number(card.dataset.n));
         const body = card.querySelector(".preview");
         if (!chunk || !body) continue;
-        const text = chunk.text || chunk.preview || "";
+        const raw = chunk.text || chunk.preview || "";
+        const text = window.Northwind ? Northwind.excerptText(raw) : raw;
+        if (window.Northwind) Northwind.appendDiagrams(card, raw);
         if (!chunk.text) {
           body.textContent = text;
           const stale = card.querySelector(".support-miss");
@@ -1128,7 +943,7 @@
 
     function setFileBadge(card, name) {
       let badge = card.querySelector("a.file-state");
-      const label = FILE_STATE_TEXT[fileStates.get(name)] || "";
+      const label = FILE_STATE_TEXT[fileStates.get(name) || mediaStates.get(name)] || "";
       if (!label) {
         if (badge) badge.remove();
         return;
@@ -1213,6 +1028,12 @@
         preview.className = "preview";
         preview.textContent = chunk.preview || "";
         card.append(meta, preview);
+        if (window.Northwind) {
+          Northwind.appendMedia(card, chunk.text || "", {
+            sourceFile: sourceName,
+            names: mediaNames,
+          });
+        }
         setFileBadge(card, sourceName);
         el.append(card);
       }
@@ -1228,6 +1049,20 @@
       previewBody.replaceChildren();
       previewLibrary.href = "/library?doc=" + encodeURIComponent(name);
       if (!previewDialog.open) previewDialog.showModal();
+      const kind = window.Northwind ? Northwind.suffixKind(name) : "";
+      if (kind === "image" || kind === "pdf") {
+        previewMeta.textContent = "View only";
+        const node = document.createElement(kind === "pdf" ? "iframe" : "img");
+        if (kind === "pdf") {
+          node.className = "media-frame";
+          node.title = name;
+        } else {
+          node.alt = name;
+        }
+        node.src = "/api/media/" + encPath(name);
+        previewBody.append(node);
+        return;
+      }
       try {
         const res = await fetch("/api/docs/" + encPath(name));
         if (gen !== previewGen) return;
@@ -1249,7 +1084,8 @@
           return;
         }
         previewMeta.textContent = "View only";
-        previewBody.innerHTML = renderMarkdown(body.body || "");
+        previewBody.innerHTML = renderMarkdown(body.body || "", { sourceFile: name, mermaid: "draw" });
+        drawAnswer(previewBody);
       } catch (err) {
         if (gen !== previewGen) return;
         previewMeta.textContent = "";
@@ -1294,7 +1130,8 @@
       view.trace = turn.trace && typeof turn.trace === "object" && !Array.isArray(turn.trace) ? turn.trace : null;
       view.md = turn.answer;
       view.answerEl.dataset.md = turn.answer;
-      view.answerEl.innerHTML = renderMarkdown(turn.answer);
+      view.answerEl.innerHTML = renderMarkdown(turn.answer, { mermaid: "draw" });
+      drawAnswer(view.answerEl);
       showSources(view, Array.isArray(turn.chunks) ? turn.chunks : [], turn.ranking || "vector");
       paintWrong(view);
       view.details.open = false;
@@ -1433,7 +1270,8 @@
         button.textContent = item.question;
         button.addEventListener("click", () => {
           input.value = item.question;
-          if (scope.endsWith(".md")) {
+          const scopeLower = scope.toLowerCase();
+          if (scopeLower.endsWith(".md") || scopeLower.endsWith(".pdf")) {
             pinFile(scope);
             loadSuggestions();
           }
@@ -1469,8 +1307,15 @@
         if (gen !== vaultGen) return;
         const docs = Array.isArray(body.docs) ? body.docs : [];
         fileStates.clear();
+        mediaNames.length = 0;
+        mediaStates.clear();
         for (const doc of docs) {
           if (!doc || typeof doc.name !== "string" || !doc.name) continue;
+          if (doc.kind === "image" || doc.kind === "pdf") {
+            mediaNames.push(doc.name);
+            if (doc.kind === "pdf" && typeof doc.state === "string") mediaStates.set(doc.name, doc.state);
+            continue;
+          }
           if (typeof doc.state !== "string") continue;
           fileStates.set(doc.name, doc.state);
         }
@@ -1493,7 +1338,11 @@
 
     function pinFile(name) {
       pinnedFile = name;
-      const folders = [...scopeEl.options].map((opt) => opt.value).filter((value) => value && !value.endsWith(".md"));
+      const folders = [...scopeEl.options].map((opt) => opt.value).filter((value) => {
+        if (!value) return false;
+        const lower = value.toLowerCase();
+        return !lower.endsWith(".md") && !lower.endsWith(".pdf");
+      });
       fillScope(folders);
       scopeEl.value = name;
     }
@@ -1536,7 +1385,8 @@
       pendingLaunch.done = true;
       let changed = false;
       if (acceptScope(scope)) {
-        if (scope.endsWith(".md")) {
+        const scopeLower = scope.toLowerCase();
+        if (scopeLower.endsWith(".md") || scopeLower.endsWith(".pdf")) {
           pinFile(scope);
           changed = true;
         } else if ([...scopeEl.options].some((opt) => opt.value === scope)) {
@@ -1664,6 +1514,8 @@
       }
       if (event.type === "done") {
         if (!turn) return;
+        turn.answerEl.innerHTML = renderMarkdown(turn.md, { mermaid: "draw" });
+        drawAnswer(turn.answerEl);
         commitActive();
         setBusy(false);
         setStatus("Ready", "idle");
@@ -1686,7 +1538,8 @@
         if (event.message === NO_INFO) {
           turn.md = NO_INFO;
           turn.answerEl.dataset.md = NO_INFO;
-          turn.answerEl.innerHTML = renderMarkdown(NO_INFO);
+          turn.answerEl.innerHTML = renderMarkdown(NO_INFO, { mermaid: "draw" });
+          drawAnswer(turn.answerEl);
           commitActive();
           setBusy(false);
           setStatus("Ready", "idle");
