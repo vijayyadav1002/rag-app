@@ -1,9 +1,11 @@
-"""PDF text and corpus images, without a second copy of the note.
+"""PDF text and image text, without a second copy of the file.
 
 Writing a sibling markdown file on Re-index would let search cite text the
-open PDF no longer contains, and it would write the notes folder. The text
-layer becomes ordinary chunks headed by the page. The PDF stays the file a
-citation opens. Images are listed and served. They are not embedded.
+open file no longer contains, and it would write the notes folder. PDF text
+comes from the text layer. Image text comes from a local OCR pass on a
+downscaled copy. Both become ordinary chunks. The original file stays what
+a citation opens. A photo with no words adds no chunks. The chat model is
+not asked to look at the picture.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -27,11 +30,14 @@ MEDIA_TYPES: dict[str, str] = {
     ".pdf": "application/pdf",
 }
 
-MAX_MEDIA_BYTES = 8_000_000
+MAX_MEDIA_BYTES = 50_000_000
 MAX_PDF_PAGES = 100
-ASSET_STATE = "asset"
+OCR_MAX_EDGE = 2048
+FILE_SCOPE_SUFFIXES = (".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp")
 PAGE_CAP_WARNING = "Only the first 100 pages were indexed."
 STAGE_DIR = Path(__file__).resolve().parent / "media_stage"
+_ocr = None
+_ocr_lock = threading.Lock()
 
 
 class MediaPathError(ValueError):
@@ -44,6 +50,10 @@ class MediaTooLarge(ValueError):
 
 class PdfExtractError(Exception):
     """The PDF could not be read or decrypted. Not an empty text layer."""
+
+
+class ImageExtractError(Exception):
+    """The image could not be decoded. Not an empty OCR result."""
 
 
 @dataclass(frozen=True)
@@ -71,8 +81,8 @@ class MediaBytes:
 class Corpus:
     """Chunks a build may embed, and the files list it must publish.
 
-    `files` includes every PDF on disk, even when the text layer is empty.
-    Images are absent. `warnings` is only the page cap. It is not retrieved.
+    `files` includes every PDF and image on disk, even when the text is empty.
+    `warnings` is only the page cap. It is not retrieved.
     """
 
     chunks: tuple
@@ -123,17 +133,23 @@ def media_relpath(name: str) -> str:
     return path.as_posix()
 
 
+def is_file_scope(name: str) -> bool:
+    """True when retrieval should match this path exactly, not as a folder."""
+    lower = name.lower()
+    return any(lower.endswith(suffix) for suffix in FILE_SCOPE_SUFFIXES)
+
+
 def indexable_relpath(name: str) -> str:
-    """Posix path a re-index may name: `.md` or `.pdf`."""
+    """Posix path a re-index may name: markdown, PDF, or an image."""
     suffix = Path(name).suffix.lower() if isinstance(name, str) else ""
     if suffix == ".md":
         try:
             return safe_md_relpath(name)
         except UnsafeNameError as exc:
             raise MediaPathError(str(exc)) from exc
-    if suffix == ".pdf":
+    if suffix in MEDIA_TYPES:
         return media_relpath(name)
-    raise MediaPathError("Only .md and .pdf files can be indexed.")
+    raise MediaPathError("Only .md, .pdf, and image files can be indexed.")
 
 
 def inline_filename(name: str) -> str:
@@ -161,6 +177,20 @@ def open_media(name: str, docs_dir: Path | None = None) -> MediaBytes:
         raise MediaPathError("Unsafe filename.")
     suffix = Path(rel).suffix.lower()
     return MediaBytes(rel, Path(rel).name, MEDIA_TYPES[suffix], path.read_bytes())
+
+
+def open_staged_media(name: str, stage_dir: Path | None = None) -> MediaBytes:
+    """Read one staged image or PDF. The live corpus is not consulted."""
+    folder, meta = _load_staged(name, stage_dir)
+    rel = str(meta.get("rel") or "")
+    if meta.get("op") != "upsert":
+        raise FileNotFoundError(rel or name)
+    blob_path = folder / "blob"
+    if not blob_path.is_file():
+        raise FileNotFoundError(rel or name)
+    checked = media_relpath(rel)
+    suffix = Path(checked).suffix.lower()
+    return MediaBytes(checked, Path(checked).name, MEDIA_TYPES[suffix], blob_path.read_bytes())
 
 
 def media_paths(docs_dir: Path) -> list[MediaFile]:
@@ -253,8 +283,97 @@ def _pdf_chunks(path: Path, source_file: str) -> tuple[list, str | None]:
     return chunks, warning
 
 
+def _ocr_engine():
+    """Load RapidOCR once. The models ship inside the package."""
+    global _ocr
+    if _ocr is not None:
+        return _ocr
+    with _ocr_lock:
+        if _ocr is None:
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+            except ImportError as exc:
+                raise MediaPathError("rapidocr is not installed.") from exc
+            _ocr = RapidOCR()
+    return _ocr
+
+
+def _prepare_image(path: Path, source_file: str):
+    """First frame, on white, longest side at most OCR_MAX_EDGE.
+
+    A transparent PNG composites onto white. Converting straight to RGB
+    paints that text onto black, and the recognizer then sees nothing.
+    """
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError as exc:
+        raise MediaPathError("Pillow is not installed.") from exc
+    try:
+        with Image.open(path) as im:
+            im.seek(0)
+            if im.format == "JPEG" and max(im.size) > OCR_MAX_EDGE:
+                im.draft("RGB", (OCR_MAX_EDGE, OCR_MAX_EDGE))
+            if max(im.size) > OCR_MAX_EDGE:
+                im.thumbnail((OCR_MAX_EDGE, OCR_MAX_EDGE))
+            rgba = im.convert("RGBA")
+            canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+            canvas.paste(rgba, mask=rgba.getchannel("A"))
+            return canvas
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise ImageExtractError(f"Could not read {source_file}.") from exc
+
+
+def _ocr_lines(result) -> list[str]:
+    if not result:
+        return []
+    lines = []
+    for item in result:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        text = item[1]
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _image_text(path: Path, source_file: str) -> str:
+    image = _prepare_image(path, source_file)
+    try:
+        import numpy as np
+
+        result, _elapse = _ocr_engine()(np.asarray(image))
+    except ImageExtractError:
+        raise
+    except MediaPathError:
+        raise
+    except Exception as exc:
+        raise ImageExtractError(f"Could not read {source_file}.") from exc
+    return "\n".join(_ocr_lines(result))
+
+
+def _image_chunks(path: Path, source_file: str) -> tuple[list, str | None]:
+    """OCR one image into the same windows a PDF page uses. No page warning."""
+    text = _image_text(path, source_file)
+    if not text.strip():
+        return [], None
+    stem = Path(source_file).stem
+    id_stem = Path(source_file).with_suffix("").as_posix().replace("/", "_")
+    heading = f"{stem} > Image"
+    chunks = windowed_chunks(
+        text,
+        source_file=source_file,
+        heading=heading,
+        id_stem=id_stem,
+        section_index=1,
+    )
+    return chunks, None
+
+
 def collect_corpus(docs_dir: Path) -> Corpus:
-    """Markdown windows, then PDF windows. Does not write the index or the notes."""
+    """Markdown windows, then PDF and image windows. Does not write the index."""
     chunks = []
     files: list[str] = []
     warnings: list[tuple[str, str]] = []
@@ -264,9 +383,10 @@ def collect_corpus(docs_dir: Path) -> Corpus:
         if produced:
             files.append(rel)
     for item in media_paths(docs_dir):
-        if item.kind != "pdf":
-            continue
-        produced, warning = _pdf_chunks(item.path, item.rel)
+        if item.kind == "pdf":
+            produced, warning = _pdf_chunks(item.path, item.rel)
+        else:
+            produced, warning = _image_chunks(item.path, item.rel)
         chunks.extend(produced)
         files.append(item.rel)
         if warning:
@@ -293,7 +413,10 @@ def collect_named(docs_dir: Path, rels: tuple[str, ...]) -> Corpus:
             if produced:
                 files.append(checked)
             continue
-        produced, warning = _pdf_chunks(path, checked)
+        if Path(checked).suffix.lower() == ".pdf":
+            produced, warning = _pdf_chunks(path, checked)
+        else:
+            produced, warning = _image_chunks(path, checked)
         chunks.extend(produced)
         files.append(checked)
         if warning:
@@ -394,7 +517,7 @@ def stage_media(
     if not data:
         raise MediaPathError("Empty file.")
     if len(data) > MAX_MEDIA_BYTES:
-        raise MediaTooLarge("File larger than 8 MB.")
+        raise MediaTooLarge("File larger than 50 MB.")
     content_type = MEDIA_TYPES[Path(rel).suffix.lower()]
     meta = {
         "rel": rel,
@@ -493,7 +616,7 @@ def approve_media(
         raise FileNotFoundError(rel)
     data = blob_path.read_bytes()
     if len(data) > MAX_MEDIA_BYTES:
-        raise MediaTooLarge("File larger than 8 MB.")
+        raise MediaTooLarge("File larger than 50 MB.")
     _atomic_bytes(path, data)
     _drop_stage(folder)
 

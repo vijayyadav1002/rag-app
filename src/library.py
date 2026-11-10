@@ -3,8 +3,8 @@
 A multipart `folder` prefixes the basename. A missing folder still writes
 the root. Upload accepts basenames only (no slashes). Delete and list use
 posix-relative paths so nested files already on disk can be shown and
-removed. The chunker reads markdown. PDF text is read by media.py. Images are
-listed and served, not embedded. Upload and delete only touch
+removed. The chunker reads markdown. PDF text and image text are read by media.py.
+Upload and delete only touch
 files on disk. They do not rebuild FAISS — search still reads index/
 until someone calls build() + reload(). List marks an indexed file
 `changed` when its bytes differ from the digest stored at index time. An
@@ -122,10 +122,11 @@ def file_digest(path: Path) -> str:
 
 
 def clean_scope(value: object) -> str:
-    """Folder or markdown path a question is allowed to search.
+    """Folder or file path a question is allowed to search.
 
-    A file scope ends in `.md`. Anything else is a folder prefix. Hidden
-    parts and traversal are rejected so a socket payload cannot escape the corpus.
+    Retrieval treats markdown, PDF, and image suffixes as one file. Anything
+    else is a folder prefix. Hidden parts and traversal are rejected so a
+    socket payload cannot escape the corpus.
     """
     if not isinstance(value, str):
         raise UnsafeNameError("Choose a folder or a file.")
@@ -236,7 +237,7 @@ def _row_kind(name: str, kinds: dict[str, str]) -> str:
 
 
 def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> list[dict]:
-    from media import ASSET_STATE, media_paths
+    from media import media_paths
 
     docs_dir = docs_dir or DOCS_DIR
     meta = index_meta(index_dir)
@@ -270,10 +271,6 @@ def list_docs(docs_dir: Path | None = None, index_dir: Path | None = None) -> li
     for name in names:
         kind = _row_kind(name, kinds)
         warning = warnings.get(name) if isinstance(warnings, dict) else None
-        if kind == "image" and name in disk:
-            row = {key: value for key, value in disk[name].items() if key != "path"}
-            rows.append({**row, "state": ASSET_STATE, "chunk_count": None, "kind": "image"})
-            continue
         if name in disk:
             state = "indexed" if name in indexed else "not_indexed"
             recorded = digests.get(name)
@@ -396,12 +393,14 @@ def search_phrases(
 def _in_scope(source_file: str, scope: str | None) -> bool:
     """Same scope rule as retrieval, without importing retrieve.
 
-    Empty scope matches everything. A `.md` scope is an exact path.
-    Anything else is that folder prefix.
+    Empty scope matches everything. A markdown, PDF, or image scope is an
+    exact path. Anything else is that folder prefix.
     """
     if not scope:
         return True
-    if scope.lower().endswith(".md"):
+    from media import is_file_scope
+
+    if is_file_scope(scope):
         return source_file == scope
     prefix = scope.rstrip("/")
     return source_file == prefix or source_file.startswith(prefix + "/")
