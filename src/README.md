@@ -78,8 +78,9 @@ CLI scripts do not read `LOCK_PASSWORD`.
 
 Optional `DOCS_DIR` points the corpus (chunking, Library upload/delete, Re-index)
 at another folder of Markdown, PDF, and images. Relative paths are from `src/`.
-Unset keeps `docs/`. Nested `*.md` and `*.pdf` files are indexed. Images are
-listed and served. They are not embedded. An upload while a folder pill is
+Unset keeps `docs/`. Nested `*.md`, `*.pdf`, and image files are indexed.
+Image text is read locally at Re-index. A picture with no words adds no chunks.
+An upload while a folder pill is
 selected is staged at `folder/basename`. Approve still does not rebuild.
 Restart and Re-index after changing it. `index/` stays here.
 
@@ -215,7 +216,8 @@ and Approve still does not rebuild. `[[target]]` and `[[target|label]]`
 open a resolved note in the preview. Ambiguous stems stay text. `![[note]]`
 and `![[note.md]]` stay text. An image or PDF reference renders in preview
 and beside an Ask excerpt. PDF text is indexed from the text layer, not
-from a generated note. `POST /api/reindex` with `{"paths": [...]}` embeds those files
+from a generated note. Image text is read by local OCR on Re-index. A
+picture with no words adds no chunks. The chat model does not see the picture. `POST /api/reindex` with `{"paths": [...]}` embeds those files
 only, copies the other vectors and the other digests, refuses an empty
 corpus without replacing the index, and falls back to a full `build()`
 when the faiss row count disagrees with the pickle. The page button still
@@ -273,10 +275,10 @@ rebuilds everything. Every item below is still not built.
 | `static/library.html` | Library UI: review queue, editor, folder pills, preview, list, upload, delete, Re-index |
 | `static/app.css` | Shared dark/light theme and nav |
 | `static/manifest.webmanifest` | Install metadata (Add to Home Screen) |
-| `media.py` | PDF text pages and image/PDF staging. Images are not embedded |
+| `media.py` | PDF text layer, image OCR, and image/PDF staging |
 | `static/render.js` | Shared Markdown renderer. Mermaid draws only a closed fence |
 | `static/vendor/mermaid.min.js` | Mermaid 11.17.2, same origin |
-| `static/sw.js` | Cache the UI shell only (`ask-northwind-v18`; not `/ws` or `/api/*`) |
+| `static/sw.js` | Cache the UI shell only (`ask-northwind-v21`; not `/ws` or `/api/*`) |
 
 ## Web UI
 
@@ -301,6 +303,6 @@ Each turn labels a source `section` or `excerpt`, shows the heading, and shows t
 
 ## Library and re-index
 
-Library is a separate page at `/library`. It lists Markdown, PDF, and images under `DOCS_DIR` (default `docs/`, including subfolders). Category pills are the folder names directly under that corpus. Upload accepts Markdown (1 MB), PDF, and images (8 MB), up to 20 files. An upload while a folder pill is selected is staged at `folder/basename`. Preview opens the file read-only and draws a closed mermaid fence. `[[target]]` and `[[target|label]]` open a resolved note in the preview. Ambiguous stems stay text. `![[note]]` and `![[note.md]]` stay text. `![alt](rel.png)`, `![[file.png]]`, and `![[file.pdf]]` render. An upload or a delete does not change the live file: Markdown stages a proposal under `review/`, and an image or PDF stages bytes under `media_stage/` (both gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. The lock is in front of the page. Approve is still the human gate that writes the corpus. Unlocking does not write files. Approving does not replace the password. Search still changes only on Re-index. Approve still does not rebuild. The page button still rebuilds everything: it posts no body, so `build()` embeds every Markdown file and every PDF text layer under `DOCS_DIR` and hot-reloads search. Images are not embedded. A PDF with no text layer adds no chunks. A PDF that cannot be read does not replace the index. Only the first 100 pages are indexed, and that warning stays on the file row. `POST /api/reindex` with `{"paths": [...]}` embeds those files only, copies the other vectors and the other digests, refuses an empty corpus without replacing the index, and falls back to a full `build()` when the faiss row count disagrees with the pickle. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
+Library is a separate page at `/library`. It lists Markdown, PDF, and images under `DOCS_DIR` (default `docs/`, including subfolders). Category pills are the folder names directly under that corpus. Upload accepts Markdown (1 MB), PDF, and images (50 MB), up to 20 files. An upload while a folder pill is selected is staged at `folder/basename`. Preview opens the file read-only and draws a closed mermaid fence. `[[target]]` and `[[target|label]]` open a resolved note in the preview. Ambiguous stems stay text. `![[note]]` and `![[note.md]]` stay text. `![alt](rel.png)`, `![[file.png]]`, and `![[file.pdf]]` render. An upload or a delete does not change the live file: Markdown stages a proposal under `review/`, and an image or PDF stages bytes under `media_stage/` (both gitignored, not searchable). Edit opens the live Markdown in that queue; it is stored when you save. The same model Ask uses can restack a draft into a `#` title and `##` sections without changing the facts. **Save draft** keeps a hand edit instead. **Format** saves first, then calls the model. **Approve** writes or removes the live file. **Reject** drops the proposal. The lock is in front of the page. Approve is still the human gate that writes the corpus. Unlocking does not write files. Approving does not replace the password. Search still changes only on Re-index. Approve still does not rebuild. The page button still rebuilds everything: it posts no body, so `build()` embeds every Markdown file, every PDF text layer, and the text read from each image under `DOCS_DIR`, then hot-reloads search. An image or PDF with no text adds no chunks. A PDF that cannot be read, or an image that cannot be decoded, does not replace the index. Only the first 100 pages are indexed, and that warning stays on the file row. `POST /api/reindex` with `{"paths": [...]}` embeds those files only, copies the other vectors and the other digests, refuses an empty corpus without replacing the index, and falls back to a full `build()` when the faiss row count disagrees with the pickle. While it rebuilds, Ask and the review actions are locked. A strong rerank hit — score at least 0 and within 1.0 of the best score in that list — sends its `##` section (up to 4,000 characters of body) into the prompt. Embedding and rerank still use the 800-character window. A best score below 0 keeps vector order and those short windows. Two windows of the same heading become one excerpt when they expand. The 11 shipped files are already one chunk per section. A file edited after `indexed_at` is badged **changed**, and Ask says the index is behind, until you Re-index. A long file list scrolls inside the list; Upload and Re-index stay on screen.
 
-Per-user accounts and OAuth stay out, along with Word, OCR, vision, SVG, a server-side chat log, auto-reindex on upload, and offline Q&A. PDF text-layer indexing is in. Conversation threads stay in the browser. Answers may include one mermaid diagram. `MAX_TOKENS` is 1200. The follow-up rewrite stays at 80 tokens.
+Per-user accounts and OAuth stay out, along with Word, vision captions, scanned-PDF OCR, SVG, a server-side chat log, auto-reindex on upload, and offline Q&A. PDF text-layer indexing is in. Image files are read by local OCR on Re-index. The chat model does not see the picture. Conversation threads stay in the browser. Answers may include one mermaid diagram. `MAX_TOKENS` is 1200. The follow-up rewrite stays at 80 tokens.
