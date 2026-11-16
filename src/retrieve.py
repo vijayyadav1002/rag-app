@@ -102,8 +102,9 @@ def in_scope(source_file: str, scope: str | None) -> bool:
     """A file scope is an exact path. A folder scope is that prefix only."""
     if not scope:
         return True
-    lower = scope.lower()
-    if lower.endswith(".md") or lower.endswith(".pdf"):
+    from media import is_file_scope
+
+    if is_file_scope(scope):
         return source_file == scope
     prefix = scope.rstrip("/")
     return source_file == prefix or source_file.startswith(prefix + "/")

@@ -124,9 +124,9 @@ def windowed_chunks(
 ) -> list[Chunk]:
     """Split one already-headed section with the markdown window rule.
 
-    PDF pages call this too. They do not go through `_split_into_sections`,
-    so a line that looks like `## ` stays inside the page. A blank body
-    returns no chunks.
+    PDF pages and image OCR call this too. They do not go through
+    `_split_into_sections`, so a line that looks like `## ` stays inside
+    the body. A blank body returns no chunks.
     """
     chunks = []
     spans = _window_spans(body, CHUNK_SIZE, CHUNK_OVERLAP)
