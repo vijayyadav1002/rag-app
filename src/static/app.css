@@ -852,13 +852,15 @@ dialog::backdrop {
   #preview { margin: 0; width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
 }
 
-/* Library preview covers the viewport. Ask keeps the #preview sheet above.
+/* Ask and Library previews cover the viewport.
    max-width/max-height: none clears the user-agent dialog:modal cap. */
-body.library-page {
+body.library-page,
+body.ask-app {
   --library-measure: 68ch;
   --library-rail: 72rem;
 }
-body.library-page #preview {
+body.library-page #preview,
+body.ask-app #preview {
   position: fixed;
   inset: 0;
   margin: 0;
@@ -873,17 +875,20 @@ body.library-page #preview {
   overscroll-behavior: contain;
   background: var(--bg);
 }
-body.library-page #preview .sheet {
+body.library-page #preview .sheet,
+body.ask-app #preview .sheet {
   container-type: inline-size;
   container-name: library-preview;
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
 }
-body.library-page #preview .sheet header {
+body.library-page #preview .sheet header,
+body.ask-app #preview .sheet header {
   align-items: start;
   padding-top: max(0.8rem, env(safe-area-inset-top));
 }
-body.library-page #preview .sheet header > div { min-width: 0; flex: 1; }
+body.library-page #preview .sheet header > div,
+body.ask-app #preview .sheet header > div { min-width: 0; flex: 1; }
 body.library-page #preview #preview-asks {
   flex-wrap: nowrap;
   overflow-x: auto;
@@ -900,7 +905,8 @@ body.library-page #preview .sheet footer:has(#preview-edit[hidden]) { display: n
 body.library-page #preview .sheet footer:not([hidden]) {
   padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
 }
-body.library-page #preview .preview-body {
+body.library-page #preview .preview-body,
+body.ask-app #preview .preview-body {
   min-height: 0;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -908,32 +914,38 @@ body.library-page #preview .preview-body {
   padding-block: 1.35rem 2.75rem;
   padding-inline: max(1.25rem, calc((100% - var(--library-measure)) / 2));
 }
-body.library-page #preview .preview-body pre { line-height: 1.45; }
-body.library-page #preview .preview-body > :is(pre, table, .diagram, .md-media) {
+body.library-page #preview .preview-body pre,
+body.ask-app #preview .preview-body pre { line-height: 1.45; }
+body.library-page #preview .preview-body > :is(pre, table, .diagram, .md-media),
+body.ask-app #preview .preview-body > :is(pre, table, .diagram, .md-media) {
   width: min(var(--library-rail), 100cqi);
   max-width: min(var(--library-rail), 100cqi);
   margin-inline: calc((100% - min(var(--library-rail), 100cqi)) / 2);
 }
-body.library-page #preview .preview-body:has(> .media-frame:only-child) {
+body.library-page #preview .preview-body:has(> .media-frame:only-child),
+body.ask-app #preview .preview-body:has(> .media-frame:only-child) {
   padding: 0;
   overflow: hidden;
   scrollbar-gutter: auto;
 }
-body.library-page #preview .preview-body:has(> .media-frame:only-child) > .media-frame {
+body.library-page #preview .preview-body:has(> .media-frame:only-child) > .media-frame,
+body.ask-app #preview .preview-body:has(> .media-frame:only-child) > .media-frame {
   width: 100%;
   height: 100%;
   min-height: 0;
   margin: 0;
   display: block;
 }
-body.library-page #preview .preview-body:has(> img:only-child) {
+body.library-page #preview .preview-body:has(> img:only-child),
+body.ask-app #preview .preview-body:has(> img:only-child) {
   display: grid;
   place-items: center;
   padding: 1.25rem;
   overflow: hidden;
   scrollbar-gutter: auto;
 }
-body.library-page #preview .preview-body:has(> img:only-child) > img {
+body.library-page #preview .preview-body:has(> img:only-child) > img,
+body.ask-app #preview .preview-body:has(> img:only-child) > img {
   max-width: 100%;
   max-height: 100%;
   width: auto;
@@ -976,3 +988,46 @@ body.library-page #preview .preview-body:has(> img:only-child) > img {
   gap: 0.6rem;
   margin: 0.6rem 0;
 }
+body.ask-app #preview .sheet footer {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
+}
+body.ask-app #preview-view-actions,
+body.ask-app #preview-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+body.ask-app #preview-edit-actions[hidden],
+body.ask-app #preview-view-actions[hidden],
+body.ask-app #preview-draft[hidden],
+body.ask-app #preview-body[hidden],
+body.ask-app #preview-edit[hidden] {
+  display: none !important;
+}
+body.ask-app #preview-draft {
+  flex: 1;
+  min-height: 0;
+  width: auto;
+  margin: 0;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  padding-block: 1.35rem 2.75rem;
+  padding-inline: max(1.25rem, calc((100% - var(--library-rail, 72rem)) / 2));
+}
+body.ask-app #preview-status {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+body.ask-app #preview-status.err { color: var(--err); }
+body.ask-app #preview-status:empty { display: none; }

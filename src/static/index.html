@@ -119,9 +119,21 @@
         <button type="button" class="ghost" id="preview-close">Close</button>
       </header>
       <div id="preview-body" class="preview-body"></div>
+      <textarea id="preview-draft" hidden spellcheck="false" aria-label="Draft markdown"></textarea>
       <footer>
-        <button type="button" id="preview-ask">Ask about this file</button>
-        <a id="preview-library" href="/library">Open in Library</a>
+        <div id="preview-view-actions">
+          <button type="button" id="preview-ask">Ask about this file</button>
+          <button type="button" id="preview-edit" hidden>Edit</button>
+          <a id="preview-library" href="/library">Open in Library</a>
+        </div>
+        <div id="preview-edit-actions" hidden>
+          <button type="button" id="preview-format">Format</button>
+          <button type="button" id="preview-save">Save draft</button>
+          <button type="button" id="preview-approve">Approve</button>
+          <button type="button" class="ghost" id="preview-reload">Reload live file</button>
+          <button type="button" class="ghost" id="preview-done">Done</button>
+        </div>
+        <p id="preview-status"></p>
       </footer>
     </div>
   </dialog>
@@ -157,6 +169,16 @@
     const threadFilter = document.getElementById("thread-filter");
     const threadFilterMobile = document.getElementById("thread-filter-mobile");
     const previewAsk = document.getElementById("preview-ask");
+    const previewEdit = document.getElementById("preview-edit");
+    const previewDraft = document.getElementById("preview-draft");
+    const previewViewActions = document.getElementById("preview-view-actions");
+    const previewEditActions = document.getElementById("preview-edit-actions");
+    const previewFormat = document.getElementById("preview-format");
+    const previewSave = document.getElementById("preview-save");
+    const previewApprove = document.getElementById("preview-approve");
+    const previewReload = document.getElementById("preview-reload");
+    const previewDone = document.getElementById("preview-done");
+    const previewStatus = document.getElementById("preview-status");
     const connEl = document.getElementById("conn");
     const reconnectBtn = document.getElementById("reconnect");
     const indexNote = document.getElementById("index-note");
@@ -259,6 +281,11 @@
     let vaultHasPto = true;
     let previewName = "";
     let previewGen = 0;
+    let previewMode = "view";
+    let previewBaseline = "";
+    let previewLive = "";
+    let previewBusy = false;
+    let previewAllowClose = false;
 
     function snapshotChunk(chunk) {
       if (!chunk || typeof chunk !== "object") return null;
@@ -687,6 +714,7 @@
     function setRebuildLock(locked) {
       rebuilding = locked;
       syncComposer();
+      syncPreviewEditLock();
       if (locked) setStatus(REBUILD_MSG, "err");
     }
 
@@ -1047,10 +1075,68 @@
       refreshSupport(turn);
     }
 
+    function detail(body, fallback) {
+      if (!body) return fallback;
+      if (typeof body.detail === "string") return body.detail;
+      return fallback;
+    }
+
+    function isMarkdownName(name) {
+      return String(name).toLowerCase().endsWith(".md");
+    }
+
+    function setPreviewStatus(text, kind) {
+      previewStatus.textContent = text || "";
+      previewStatus.className = kind === "err" ? "err" : "";
+    }
+
+    function previewDirty() {
+      return previewMode === "edit" && previewDraft.value !== previewBaseline;
+    }
+
+    function confirmDiscard() {
+      if (!previewDirty()) return true;
+      return window.confirm("Discard unsaved edits?");
+    }
+
+    function showPreviewView() {
+      previewMode = "view";
+      previewDraft.hidden = true;
+      previewBody.hidden = false;
+      previewViewActions.hidden = false;
+      previewEditActions.hidden = true;
+    }
+
+    function showPreviewEdit() {
+      previewMode = "edit";
+      previewBody.hidden = true;
+      previewDraft.hidden = false;
+      previewViewActions.hidden = true;
+      previewEditActions.hidden = false;
+      previewMeta.textContent = "Editing";
+      syncPreviewEditLock();
+    }
+
+    function syncPreviewEditLock() {
+      const locked = rebuilding || previewBusy;
+      previewFormat.disabled = locked;
+      previewSave.disabled = locked;
+      previewApprove.disabled = locked;
+      previewReload.disabled = locked;
+    }
+
     async function openPreview(name) {
       if (!name) return;
+      if (previewDialog.open && previewMode === "edit" && name === previewName) return;
+      if (previewDialog.open && !confirmDiscard()) return;
       const gen = ++previewGen;
       previewName = name;
+      showPreviewView();
+      previewLive = "";
+      previewBaseline = "";
+      previewDraft.value = "";
+      previewEdit.hidden = true;
+      setPreviewStatus("");
       previewTitle.textContent = name;
       previewMeta.textContent = "Loading…";
       previewBody.replaceChildren();
@@ -1097,14 +1183,82 @@
           previewBody.textContent = typeof body.detail === "string" ? body.detail : "Could not open the file.";
           return;
         }
+        previewLive = typeof body.body === "string" ? body.body : "";
         previewMeta.textContent = "View only";
-        previewBody.innerHTML = renderMarkdown(body.body || "", { sourceFile: name, mermaid: "draw" });
+        previewEdit.hidden = false;
+        previewBody.innerHTML = renderMarkdown(previewLive, { sourceFile: name, mermaid: "draw" });
         drawAnswer(previewBody);
       } catch (err) {
         if (gen !== previewGen) return;
         previewMeta.textContent = "";
         previewBody.textContent = OFFLINE_MSG;
       }
+    }
+
+    async function startPreviewEdit() {
+      if (previewMode === "edit" || !isMarkdownName(previewName)) return;
+      if (!navigator.onLine) { setPreviewStatus(OFFLINE_MSG, "err"); return; }
+      const name = previewName;
+      const gen = previewGen;
+      try {
+        const res = await fetch("/api/review");
+        if (gen !== previewGen || name !== previewName) return;
+        if (res.status === 401) { showLock(SESSION_ENDED); return; }
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setPreviewStatus(detail(body, "Could not load the draft."), "err");
+          return;
+        }
+        const pending = (body.proposals || []).find((item) => item && item.target === name);
+        if (pending && pending.op === "delete") {
+          setPreviewStatus("Reject the pending delete in Library before editing this file.", "err");
+          return;
+        }
+        if (pending && pending.op === "rename") {
+          setPreviewStatus("Finish or reject the pending move in Library before editing this file.", "err");
+          return;
+        }
+        let text = previewLive;
+        let status = "";
+        let kind = "";
+        if (pending && pending.op === "upsert" && typeof pending.body === "string") {
+          text = pending.body;
+          status = pending.format_error || "Pending draft. Approve to write the live file.";
+          if (pending.format_error) kind = "err";
+        }
+        previewBaseline = text;
+        previewDraft.value = text;
+        showPreviewEdit();
+        setPreviewStatus(status, kind);
+        previewDraft.focus();
+      } catch (err) {
+        if (gen !== previewGen) return;
+        setPreviewStatus(OFFLINE_MSG, "err");
+      }
+    }
+
+    async function putPreviewDraft() {
+      const sent = previewDraft.value;
+      const res = await fetch("/api/review/" + encPath(previewName), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: sent }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 401) showLock(SESSION_ENDED);
+      return { res, body, sent };
+    }
+
+    function showPreviewError(res, body, fallback) {
+      if (res.status === 401) { showLock(SESSION_ENDED); return; }
+      const message = detail(body, fallback);
+      if (res.status === 409 && message.indexOf("rebuilding") !== -1) {
+        setRebuildLock(true);
+        setPreviewStatus("Index is rebuilding. Try again when it finishes.", "err");
+        startRebuildPoll();
+        return;
+      }
+      setPreviewStatus(message, "err");
     }
 
     function commitActive() {
@@ -1209,6 +1363,7 @@
       sessionGen += 1;
       document.body.classList.add("locked");
       stopRebuildPoll();
+      previewMode = "view";
       if (previewDialog.open) previewDialog.close();
       closeThreads();
       lockReconnect.hidden = true;
@@ -1364,6 +1519,8 @@
 
     function askAboutFile() {
       if (!previewName) return;
+      if (!confirmDiscard()) return;
+      previewMode = "view";
       pinFile(previewName);
       loadSuggestions();
       if (previewDialog.open) previewDialog.close();
@@ -1389,6 +1546,7 @@
       pendingLaunch = {
         scope: typeof scope === "string" ? scope : "",
         q: typeof q === "string" ? q : "",
+        doc: typeof params.get("doc") === "string" ? params.get("doc") : "",
         done: false,
       };
     }
@@ -1412,7 +1570,20 @@
       }
       if (acceptQ(q)) input.value = q;
       history.replaceState(null, "", "/");
+      openLaunchDoc();
       return changed;
+    }
+
+    function openLaunchDoc() {
+      if (!pendingLaunch || !pendingLaunch.doc) return;
+      const doc = pendingLaunch.doc;
+      pendingLaunch.doc = "";
+      if (!acceptScope(doc)) return;
+      const lower = doc.toLowerCase();
+      const editable = lower.endsWith(".md");
+      const media = /\.(png|jpe?g|gif|webp|pdf)$/.test(lower);
+      if (!editable && !media) return;
+      openPreview(doc);
     }
 
     async function startAsk() {
@@ -1632,8 +1803,154 @@
     });
     threadsToggle.addEventListener("click", () => threadsDialog.showModal());
     threadsClose.addEventListener("click", () => threadsDialog.close());
-    previewClose.addEventListener("click", () => previewDialog.close());
+    previewClose.addEventListener("click", () => {
+      if (!confirmDiscard()) return;
+      previewAllowClose = true;
+      previewMode = "view";
+      previewDialog.close();
+      previewAllowClose = false;
+    });
+    // Escape and the backdrop close the dialog before preventDefault can
+    // stop them (the cancel event is not cancelable). Reopen a dirty draft
+    // and ask after the close has finished.
+    previewDialog.addEventListener("close", () => {
+      if (previewAllowClose || !previewDirty()) return;
+      if (!previewDialog.open) previewDialog.showModal();
+      setTimeout(() => {
+        if (!previewDirty()) return;
+        if (window.confirm("Discard unsaved edits?")) {
+          previewAllowClose = true;
+          previewMode = "view";
+          previewDialog.close();
+          previewAllowClose = false;
+        }
+      }, 0);
+    });
+    window.addEventListener("beforeunload", (event) => {
+      if (!previewDirty()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
     previewAsk.addEventListener("click", askAboutFile);
+    previewEdit.addEventListener("click", () => { startPreviewEdit(); });
+    previewSave.addEventListener("click", async () => {
+      if (previewMode !== "edit" || !isMarkdownName(previewName) || previewBusy) return;
+      if (!navigator.onLine) { setPreviewStatus(OFFLINE_MSG, "err"); return; }
+      previewBusy = true;
+      syncPreviewEditLock();
+      try {
+        const saved = await putPreviewDraft();
+        if (saved.res.status === 401) return;
+        if (!saved.res.ok) { showPreviewError(saved.res, saved.body, "Save failed"); return; }
+        previewBaseline = saved.sent;
+        setPreviewStatus("Draft saved. Approve to write the live file.", "");
+      } catch (err) {
+        setPreviewStatus(OFFLINE_MSG, "err");
+      } finally {
+        previewBusy = false;
+        syncPreviewEditLock();
+      }
+    });
+    previewFormat.addEventListener("click", async () => {
+      if (previewMode !== "edit" || !isMarkdownName(previewName) || previewBusy) return;
+      if (!navigator.onLine) { setPreviewStatus(OFFLINE_MSG, "err"); return; }
+      previewBusy = true;
+      syncPreviewEditLock();
+      const name = previewName;
+      const gen = previewGen;
+      try {
+        const saved = await putPreviewDraft();
+        if (saved.res.status === 401) return;
+        if (!saved.res.ok) { showPreviewError(saved.res, saved.body, "Save failed"); return; }
+        previewBaseline = saved.sent;
+        const res = await fetch("/api/review/" + encPath(name) + "/format", { method: "POST" });
+        if (gen !== previewGen || name !== previewName) return;
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { showLock(SESSION_ENDED); return; }
+        if (!res.ok) { showPreviewError(res, body, "Formatting failed"); return; }
+        const next = body.proposal && typeof body.proposal.body === "string" ? body.proposal.body : saved.sent;
+        if (previewDraft.value === saved.sent) {
+          previewDraft.value = next;
+          previewBaseline = next;
+        }
+        setPreviewStatus("Formatted. Approve to write the live file.", "");
+      } catch (err) {
+        if (gen === previewGen) setPreviewStatus(OFFLINE_MSG, "err");
+      } finally {
+        previewBusy = false;
+        syncPreviewEditLock();
+      }
+    });
+    previewReload.addEventListener("click", async () => {
+      if (previewMode !== "edit" || !previewName || previewBusy) return;
+      if (!navigator.onLine) { setPreviewStatus(OFFLINE_MSG, "err"); return; }
+      const name = previewName;
+      const gen = previewGen;
+      try {
+        const res = await fetch("/api/docs/" + encPath(name));
+        if (gen !== previewGen || name !== previewName) return;
+        if (res.status === 401) { showLock(SESSION_ENDED); return; }
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 404) { setPreviewStatus("No live file yet.", "err"); return; }
+        if (!res.ok) { showPreviewError(res, body, "Could not load the live file."); return; }
+        previewDraft.value = typeof body.body === "string" ? body.body : "";
+        previewLive = previewDraft.value;
+        setPreviewStatus("Loaded the live file. Save draft to keep it.", "");
+      } catch (err) {
+        if (gen === previewGen) setPreviewStatus(OFFLINE_MSG, "err");
+      }
+    });
+    previewApprove.addEventListener("click", async () => {
+      if (previewMode !== "edit" || !isMarkdownName(previewName) || previewBusy) return;
+      if (!navigator.onLine) { setPreviewStatus(OFFLINE_MSG, "err"); return; }
+      previewBusy = true;
+      syncPreviewEditLock();
+      const name = previewName;
+      const gen = previewGen;
+      try {
+        const saved = await putPreviewDraft();
+        if (saved.res.status === 401) return;
+        if (!saved.res.ok) { showPreviewError(saved.res, saved.body, "Save failed"); return; }
+        previewBaseline = saved.sent;
+        const res = await fetch("/api/review/" + encPath(name) + "/approve", { method: "POST" });
+        if (gen !== previewGen || name !== previewName) return;
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { showLock(SESSION_ENDED); return; }
+        if (!res.ok) { showPreviewError(res, body, "Approve failed"); return; }
+        if (previewDraft.value !== saved.sent) {
+          previewLive = saved.sent;
+          previewBody.innerHTML = renderMarkdown(previewLive, { sourceFile: name, mermaid: "draw" });
+          drawAnswer(previewBody);
+          setPreviewStatus("Approved. Re-index to update search.", "");
+          checkRebuildOnLoad();
+          return;
+        }
+        showPreviewView();
+        setPreviewStatus("Approved. Re-index to update search.", "");
+        const live = await fetch("/api/docs/" + encPath(name));
+        if (gen !== previewGen || name !== previewName) return;
+        const liveBody = await live.json().catch(() => ({}));
+        if (live.ok) {
+          previewLive = typeof liveBody.body === "string" ? liveBody.body : "";
+          previewMeta.textContent = "View only";
+          previewEdit.hidden = false;
+          previewBody.innerHTML = renderMarkdown(previewLive, { sourceFile: name, mermaid: "draw" });
+          drawAnswer(previewBody);
+        }
+        checkRebuildOnLoad();
+      } catch (err) {
+        if (gen === previewGen) setPreviewStatus(OFFLINE_MSG, "err");
+      } finally {
+        previewBusy = false;
+        syncPreviewEditLock();
+      }
+    });
+    previewDone.addEventListener("click", () => {
+      if (!confirmDiscard()) return;
+      showPreviewView();
+      previewMeta.textContent = "View only";
+      setPreviewStatus("");
+    });
     previewBody.addEventListener("click", (event) => {
       const link = event.target.closest("button.wikilink");
       if (!link || !previewBody.contains(link) || !link.dataset.path) return;
