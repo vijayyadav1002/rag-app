@@ -1374,6 +1374,7 @@
       pendingLaunch = {
         scope: typeof scope === "string" ? scope : "",
         q: typeof q === "string" ? q : "",
+        doc: typeof params.get("doc") === "string" ? params.get("doc") : "",
         done: false,
       };
     }
@@ -1398,7 +1399,20 @@
       }
       if (acceptQ(q)) input.value = q;
       history.replaceState(null, "", "/");
+      openLaunchDoc();
       return changed;
+    }
+
+    function openLaunchDoc() {
+      if (!pendingLaunch || !pendingLaunch.doc) return;
+      const doc = pendingLaunch.doc;
+      pendingLaunch.doc = "";
+      if (!acceptScope(doc)) return;
+      const lower = doc.toLowerCase();
+      const editable = lower.endsWith(".md");
+      const media = /\.(png|jpe?g|gif|webp|pdf)$/.test(lower);
+      if (!editable && !media) return;
+      openPreview(doc);
     }
 
     async function startAsk() {
