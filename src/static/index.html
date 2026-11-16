@@ -1224,14 +1224,15 @@
     }
 
     async function putPreviewDraft() {
+      const sent = previewDraft.value;
       const res = await fetch("/api/review/" + encPath(previewName), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: previewDraft.value }),
+        body: JSON.stringify({ body: sent }),
       });
       const body = await res.json().catch(() => ({}));
       if (res.status === 401) showLock(SESSION_ENDED);
-      return { res, body };
+      return { res, body, sent };
     }
 
     function showPreviewError(res, body, fallback) {
@@ -1824,10 +1825,10 @@
       previewBusy = true;
       syncPreviewEditLock();
       try {
-        const { res, body } = await putPreviewDraft();
-        if (res.status === 401) return;
-        if (!res.ok) { showPreviewError(res, body, "Save failed"); return; }
-        previewBaseline = previewDraft.value;
+        const saved = await putPreviewDraft();
+        if (saved.res.status === 401) return;
+        if (!saved.res.ok) { showPreviewError(saved.res, saved.body, "Save failed"); return; }
+        previewBaseline = saved.sent;
         setPreviewStatus("Draft saved. Approve to write the live file.", "");
       } catch (err) {
         setPreviewStatus(OFFLINE_MSG, "err");
@@ -1847,15 +1848,17 @@
         const saved = await putPreviewDraft();
         if (saved.res.status === 401) return;
         if (!saved.res.ok) { showPreviewError(saved.res, saved.body, "Save failed"); return; }
-        previewBaseline = previewDraft.value;
+        previewBaseline = saved.sent;
         const res = await fetch("/api/review/" + encPath(name) + "/format", { method: "POST" });
         if (gen !== previewGen || name !== previewName) return;
         const body = await res.json().catch(() => ({}));
         if (res.status === 401) { showLock(SESSION_ENDED); return; }
         if (!res.ok) { showPreviewError(res, body, "Formatting failed"); return; }
-        const next = body.proposal && typeof body.proposal.body === "string" ? body.proposal.body : previewDraft.value;
-        previewDraft.value = next;
-        previewBaseline = next;
+        const next = body.proposal && typeof body.proposal.body === "string" ? body.proposal.body : saved.sent;
+        if (previewDraft.value === saved.sent) {
+          previewDraft.value = next;
+          previewBaseline = next;
+        }
         setPreviewStatus("Formatted. Approve to write the live file.", "");
       } catch (err) {
         if (gen === previewGen) setPreviewStatus(OFFLINE_MSG, "err");
@@ -1894,12 +1897,20 @@
         const saved = await putPreviewDraft();
         if (saved.res.status === 401) return;
         if (!saved.res.ok) { showPreviewError(saved.res, saved.body, "Save failed"); return; }
-        previewBaseline = previewDraft.value;
+        previewBaseline = saved.sent;
         const res = await fetch("/api/review/" + encPath(name) + "/approve", { method: "POST" });
         if (gen !== previewGen || name !== previewName) return;
         const body = await res.json().catch(() => ({}));
         if (res.status === 401) { showLock(SESSION_ENDED); return; }
         if (!res.ok) { showPreviewError(res, body, "Approve failed"); return; }
+        if (previewDraft.value !== saved.sent) {
+          previewLive = saved.sent;
+          previewBody.innerHTML = renderMarkdown(previewLive, { sourceFile: name, mermaid: "draw" });
+          drawAnswer(previewBody);
+          setPreviewStatus("Approved. Re-index to update search.", "");
+          checkRebuildOnLoad();
+          return;
+        }
         showPreviewView();
         setPreviewStatus("Approved. Re-index to update search.", "");
         const live = await fetch("/api/docs/" + encPath(name));
