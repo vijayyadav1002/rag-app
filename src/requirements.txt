@@ -9,4 +9,4 @@ uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 pypdf>=5.1
 pillow>=10.4
-rapidocr-onnxruntime>=1.4.4
+rapidocr-onnxruntime>=1.2.3
