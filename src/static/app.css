@@ -972,3 +972,46 @@ body.ask-app #preview .preview-body:has(> img:only-child) > img {
   gap: 0.6rem;
   margin: 0.6rem 0;
 }
+body.ask-app #preview .sheet footer {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
+}
+body.ask-app #preview-view-actions,
+body.ask-app #preview-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+body.ask-app #preview-edit-actions[hidden],
+body.ask-app #preview-view-actions[hidden],
+body.ask-app #preview-draft[hidden],
+body.ask-app #preview-body[hidden],
+body.ask-app #preview-edit[hidden] {
+  display: none !important;
+}
+body.ask-app #preview-draft {
+  flex: 1;
+  min-height: 0;
+  width: auto;
+  margin: 0;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  padding-block: 1.35rem 2.75rem;
+  padding-inline: max(1.25rem, calc((100% - var(--library-rail, 72rem)) / 2));
+}
+body.ask-app #preview-status {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+body.ask-app #preview-status.err { color: var(--err); }
+body.ask-app #preview-status:empty { display: none; }
