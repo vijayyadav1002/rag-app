@@ -216,6 +216,13 @@
 
     const mediaNames = [];
     const mediaStates = new Map();
+    const chunkCounts = new Map();
+    const FILE_SCOPE_SUFFIXES = [".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+    function isFileScope(name) {
+      const lower = String(name || "").toLowerCase();
+      return FILE_SCOPE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+    }
 
     function renderMarkdown(src, extra) {
       const opts = {
@@ -1051,7 +1058,14 @@
       if (!previewDialog.open) previewDialog.showModal();
       const kind = window.Northwind ? Northwind.suffixKind(name) : "";
       if (kind === "image" || kind === "pdf") {
-        previewMeta.textContent = "View only";
+        const bits = [];
+        const count = chunkCounts.get(name);
+        if (typeof count === "number") {
+          bits.push(count + (count === 1 ? " chunk indexed" : " chunks indexed"));
+        }
+        const stateLabel = FILE_STATE_TEXT[mediaStates.get(name)] || "";
+        if (stateLabel) bits.push(stateLabel);
+        previewMeta.textContent = bits.join(" · ") || "View only";
         const node = document.createElement(kind === "pdf" ? "iframe" : "img");
         if (kind === "pdf") {
           node.className = "media-frame";
@@ -1270,8 +1284,7 @@
         button.textContent = item.question;
         button.addEventListener("click", () => {
           input.value = item.question;
-          const scopeLower = scope.toLowerCase();
-          if (scopeLower.endsWith(".md") || scopeLower.endsWith(".pdf")) {
+          if (isFileScope(scope)) {
             pinFile(scope);
             loadSuggestions();
           }
@@ -1309,11 +1322,13 @@
         fileStates.clear();
         mediaNames.length = 0;
         mediaStates.clear();
+        chunkCounts.clear();
         for (const doc of docs) {
           if (!doc || typeof doc.name !== "string" || !doc.name) continue;
+          if (typeof doc.chunk_count === "number") chunkCounts.set(doc.name, doc.chunk_count);
           if (doc.kind === "image" || doc.kind === "pdf") {
             mediaNames.push(doc.name);
-            if (doc.kind === "pdf" && typeof doc.state === "string") mediaStates.set(doc.name, doc.state);
+            if (typeof doc.state === "string") mediaStates.set(doc.name, doc.state);
             continue;
           }
           if (typeof doc.state !== "string") continue;
@@ -1341,7 +1356,7 @@
       const folders = [...scopeEl.options].map((opt) => opt.value).filter((value) => {
         if (!value) return false;
         const lower = value.toLowerCase();
-        return !lower.endsWith(".md") && !lower.endsWith(".pdf");
+        return !isFileScope(value);
       });
       fillScope(folders);
       scopeEl.value = name;
@@ -1385,8 +1400,7 @@
       pendingLaunch.done = true;
       let changed = false;
       if (acceptScope(scope)) {
-        const scopeLower = scope.toLowerCase();
-        if (scopeLower.endsWith(".md") || scopeLower.endsWith(".pdf")) {
+        if (isFileScope(scope)) {
           pinFile(scope);
           changed = true;
         } else if ([...scopeEl.options].some((opt) => opt.value === scope)) {

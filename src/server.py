@@ -60,6 +60,7 @@ from media import (
     indexable_relpath,
     inline_filename,
     open_media,
+    open_staged_media,
     pending_media,
     reject_media,
     stage_delete as stage_media_delete,
@@ -602,6 +603,26 @@ def api_delete(name: str):
 @app.get("/api/review")
 def api_review() -> dict:
     return _review_body()
+
+
+@app.get("/api/review/{name:path}/media")
+def api_review_media(name: str) -> Response:
+    """Staged image or PDF bytes. The live corpus route does not serve these."""
+    try:
+        opened = open_staged_media(name)
+    except MediaPathError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "File not found.") from exc
+    return Response(
+        content=opened.body,
+        media_type=opened.content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": inline_filename(opened.filename),
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @app.put("/api/review/{name:path}")

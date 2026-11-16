@@ -94,7 +94,7 @@
       <h2>Add files</h2>
       <div class="drop-zone" id="drop-zone">
         <p>Drop Markdown, PDF, or images here, or <button type="button" id="browse-files">browse</button></p>
-        <p class="fine">MARKDOWN 1 MB · IMAGES AND PDF 8 MB · UP TO 20 FILES</p>
+        <p class="fine">MARKDOWN 1 MB · IMAGES AND PDF 50 MB · UP TO 20 FILES</p>
       </div>
       <form id="new-note-form" class="new-note">
         <label>Folder
@@ -477,8 +477,7 @@
           fileReindex.disabled = rebuilding;
           fileReindex.addEventListener("click", () => reindexOne(doc.name));
           const kind = docKind(doc);
-          actions.append(view);
-          if (kind !== "image") actions.append(ask, fileReindex);
+          actions.append(view, ask, fileReindex);
           if (doc.state !== "missing_on_disk") {
             if (kind === "note") actions.append(edit, move);
             actions.append(del);
@@ -916,6 +915,14 @@
           note.className = "doc-meta diff-wrap";
           note.textContent = "Approve adds this file. Search updates after Re-index.";
           row.append(note);
+          if (item.op === "upsert") {
+            const shot = document.createElement(item.kind === "pdf" ? "iframe" : "img");
+            shot.className = item.kind === "pdf" ? "review-frame" : "review-shot";
+            if (item.kind === "pdf") shot.title = item.target;
+            else shot.alt = item.target;
+            shot.src = "/api/review/" + encPath(item.target) + "/media";
+            row.append(shot);
+          }
         } else {
           queueDiff(row, item, reviewGen);
         }

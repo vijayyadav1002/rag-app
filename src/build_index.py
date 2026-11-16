@@ -25,6 +25,7 @@ from sentence_transformers import SentenceTransformer
 from chunk import resolve_docs_dir
 from library import file_digest
 from media import (
+    ImageExtractError,
     MediaPathError,
     PdfExtractError,
     collect_corpus,
@@ -73,7 +74,7 @@ def _plan(docs_dir: Path, named: tuple[str, ...] | None):
         if named is None:
             return collect_corpus(docs_dir)
         return collect_named(docs_dir, named)
-    except PdfExtractError as exc:
+    except (PdfExtractError, ImageExtractError) as exc:
         raise IndexBuildError(f"{exc} The index was not replaced.") from exc
     except MediaPathError as exc:
         raise IndexBuildError(f"{exc} The index was not replaced.") from exc
