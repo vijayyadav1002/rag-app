@@ -308,6 +308,37 @@ def _chunk_count(counts: dict[str, int] | None, name: str) -> int | None:
     return counts.get(name, 0)
 
 
+def empty_indexed_rows(docs_dir: Path | None = None, index_dir: Path | None = None) -> list[dict]:
+    """Name indexed files that produced no text, without hashing them.
+
+    list_docs() reads every indexed file to tell a later edit from the
+    indexed copy. A weak answer only needs the zero-chunk names, and
+    hashing the vault on that path is the slow part. Missing chunk
+    counts mean the zero is unknown, so this returns nothing rather
+    than calling every file empty.
+    """
+    counts = chunk_counts(index_dir)
+    if counts is None:
+        return []
+    root = (docs_dir or DOCS_DIR).resolve()
+    rows: list[dict] = []
+    for name in index_meta(index_dir)["files"]:
+        if counts.get(name, 0) != 0:
+            continue
+        candidate = Path(name)
+        if candidate.is_absolute():
+            continue
+        try:
+            live = (root / candidate).resolve()
+            live.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not live.is_file():
+            continue
+        rows.append({"name": name, "state": "indexed", "chunk_count": 0})
+    return rows
+
+
 def save_upload(filename: str, data: bytes, docs_dir: Path | None = None) -> str:
     docs_dir = docs_dir or DOCS_DIR
     try:

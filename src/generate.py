@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from threading import Event
 
-from library import list_docs
+from library import empty_indexed_rows
 from llm import LLMConfigError, complete, load_settings, stream as llm_stream
 from retrieve import RetrievedChunk, prompt_excerpts, retrieve_explained
 
@@ -277,7 +277,7 @@ def answer(
     chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
     chunks = prompt_excerpts(chunks)
     if not trace.get("trusted"):
-        note = empty_file_note(question, list_docs())
+        note = empty_file_note(question, empty_indexed_rows())
         if note:
             return note, chunks
     if not chunks:
@@ -335,7 +335,7 @@ def answer_stream(
         ],
     }
     if not trace.get("trusted"):
-        note = empty_file_note(question, list_docs())
+        note = empty_file_note(question, empty_indexed_rows())
         if note:
             yield {"type": "token", "text": note}
             yield {"type": "done", "question": question}
