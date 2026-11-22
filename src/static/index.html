@@ -1160,7 +1160,9 @@
         const bits = [];
         const count = chunkCounts.get(name);
         if (typeof count === "number") {
-          bits.push(count + (count === 1 ? " chunk indexed" : " chunks indexed"));
+          bits.push(count === 0
+            ? "No text extracted"
+            : count + (count === 1 ? " chunk indexed" : " chunks indexed"));
         }
         const stateLabel = FILE_STATE_TEXT[mediaStates.get(name)] || "";
         if (stateLabel) bits.push(stateLabel);

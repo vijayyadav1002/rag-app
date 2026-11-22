@@ -230,6 +230,12 @@
       missing_on_disk: "missing on disk",
       asset: "file",
     };
+
+    function rowLabel(doc) {
+      if (doc.state === "indexed" && doc.chunk_count === 0) return "no text extracted";
+      return STATE_LABEL[doc.state] || doc.state;
+    }
+
     const SESSION_ENDED = "Session ended. Enter the password.";
     const STORE_MSG = "Could not store the session.";
     const OFFLINE_MSG = "You're offline.";
@@ -443,7 +449,7 @@
           actions.className = "doc-actions";
           const state = document.createElement("span");
           state.className = "state " + doc.state;
-          state.textContent = STATE_LABEL[doc.state] || doc.state;
+          state.textContent = rowLabel(doc);
           actions.append(state);
           if (doc.pending) {
             const pending = document.createElement("span");
@@ -593,9 +599,10 @@
       previewTitle.textContent = name;
       const bits = [];
       if (doc && typeof doc.chunk_count === "number") {
-        bits.push(doc.chunk_count + (doc.chunk_count === 1 ? " chunk indexed" : " chunks indexed"));
+        if (doc.chunk_count === 0) bits.push("No text extracted");
+        else bits.push(doc.chunk_count + (doc.chunk_count === 1 ? " chunk indexed" : " chunks indexed"));
       }
-      if (doc && doc.state) bits.push(STATE_LABEL[doc.state] || doc.state);
+      if (doc && doc.state) bits.push(rowLabel(doc));
       previewMeta.textContent = bits.join(" · ") || "View only";
       setPreviewAsks(name, "");
       previewBody.textContent = "Loading…";

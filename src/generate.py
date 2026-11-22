@@ -24,9 +24,12 @@ The first question skips that rewrite, so a single-turn search string is
 unchanged.
 """
 
+import re
 from collections.abc import Iterator
+from pathlib import Path
 from threading import Event
 
+from library import list_docs
 from llm import LLMConfigError, complete, load_settings, stream as llm_stream
 from retrieve import RetrievedChunk, prompt_excerpts, retrieve_explained
 
@@ -34,6 +37,50 @@ PREVIEW_CHARS = 240
 NO_INFO = (
     "I don't have information about that in the available documents."
 )
+
+_NAME_STOP = {
+    "about", "available", "document", "documents", "file", "files",
+    "have", "image", "information", "note", "notes", "page", "pages",
+    "pdf", "scanned", "that", "this", "what", "when", "where",
+    "which", "with", "your",
+}
+
+
+def _name_tokens(text: str) -> set[str]:
+    words = set(re.findall(r"[a-z0-9]+", text.lower()))
+    return {word for word in words if len(word) >= 4 and word not in _NAME_STOP}
+
+
+def empty_file_note(question: str, rows: list[dict]) -> str | None:
+    """Name zero-chunk library files whose filename shares a question word.
+
+    A hit requires chunk_count 0 and state indexed or changed. not_indexed
+    stays the plain refusal: that file was never published. Tokens shorter
+    than 4, and generic words like "notes" and "page", do not count.
+    """
+    wanted = _name_tokens(question)
+    if not wanted:
+        return None
+    names: list[str] = []
+    for row in rows:
+        if row.get("chunk_count") != 0:
+            continue
+        if row.get("state") not in {"indexed", "changed"}:
+            continue
+        label = str(row.get("name") or "")
+        if not wanted & _name_tokens(Path(label).stem):
+            continue
+        names.append(label)
+        if len(names) == 3:
+            break
+    if not names:
+        return None
+    if len(names) == 1:
+        tail = f"{names[0]} is in the library and has no extracted text."
+    else:
+        tail = f"{', '.join(names)} are in the library and have no extracted text."
+    return NO_INFO + " " + tail
+
 
 # Completed pairs only. The UI can show a longer thread than the model sees.
 HISTORY_MAX_MESSAGES = 8
@@ -229,6 +276,10 @@ def answer(
     query = _search_question(question, turns)
     chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
     chunks = prompt_excerpts(chunks)
+    if not trace.get("trusted"):
+        note = empty_file_note(question, list_docs())
+        if note:
+            return note, chunks
     if not chunks:
         return NO_INFO, []
 
@@ -283,6 +334,12 @@ def answer_stream(
             for i, c in enumerate(chunks)
         ],
     }
+    if not trace.get("trusted"):
+        note = empty_file_note(question, list_docs())
+        if note:
+            yield {"type": "token", "text": note}
+            yield {"type": "done", "question": question}
+            return
     if not chunks:
         yield {"type": "error", "message": NO_INFO}
         return
