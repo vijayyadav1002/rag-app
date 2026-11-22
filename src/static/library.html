@@ -598,11 +598,15 @@
       const doc = lastDocs.find((item) => item.name === name);
       previewTitle.textContent = name;
       const bits = [];
+      const label = doc && doc.state ? rowLabel(doc) : "";
       if (doc && typeof doc.chunk_count === "number") {
-        if (doc.chunk_count === 0) bits.push("No text extracted");
-        else bits.push(doc.chunk_count + (doc.chunk_count === 1 ? " chunk indexed" : " chunks indexed"));
+        if (doc.chunk_count === 0) {
+          if (label !== "no text extracted") bits.push("No text extracted");
+        } else {
+          bits.push(doc.chunk_count + (doc.chunk_count === 1 ? " chunk indexed" : " chunks indexed"));
+        }
       }
-      if (doc && doc.state) bits.push(rowLabel(doc));
+      if (label) bits.push(label);
       previewMeta.textContent = bits.join(" · ") || "View only";
       setPreviewAsks(name, "");
       previewBody.textContent = "Loading…";

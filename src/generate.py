@@ -41,7 +41,7 @@ NO_INFO = (
 _NAME_STOP = {
     "about", "available", "document", "documents", "file", "files",
     "have", "image", "information", "note", "notes", "page", "pages",
-    "pdf", "scanned", "that", "this", "what", "when", "where",
+    "pdf", "scan", "scanned", "that", "this", "what", "when", "where",
     "which", "with", "your",
 }
 
@@ -56,7 +56,7 @@ def empty_file_note(question: str, rows: list[dict]) -> str | None:
 
     A hit requires chunk_count 0 and state indexed or changed. not_indexed
     stays the plain refusal: that file was never published. Tokens shorter
-    than 4, and generic words like "notes" and "page", do not count.
+    than 4, and generic words like "scan" and "notes", do not count.
     """
     wanted = _name_tokens(question)
     if not wanted:
