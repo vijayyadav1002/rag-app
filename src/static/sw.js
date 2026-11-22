@@ -1,4 +1,4 @@
-const CACHE = "ask-northwind-v27";
+const CACHE = "ask-northwind-v28";
 const SHELL = [
   "/",
   "/library",
