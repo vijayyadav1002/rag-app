@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from threading import Event
 
-from library import empty_indexed_rows
+from library import _in_scope, empty_indexed_rows
 from llm import LLMConfigError, complete, load_settings, stream as llm_stream
 from retrieve import RetrievedChunk, prompt_excerpts, retrieve_explained
 
@@ -80,6 +80,20 @@ def empty_file_note(question: str, rows: list[dict]) -> str | None:
     else:
         tail = f"{', '.join(names)} are in the library and have no extracted text."
     return NO_INFO + " " + tail
+
+
+def _note_rows(scope: str | None) -> list[dict]:
+    """Zero-chunk names the active scope is allowed to mention.
+
+    Matching is only the filename. A folder or file scope must not name
+    a row retrieval would have skipped. library._in_scope is that rule.
+    """
+    kept: list[dict] = []
+    for row in empty_indexed_rows():
+        name = str(row.get("name") or "")
+        if _in_scope(name, scope):
+            kept.append(row)
+    return kept
 
 
 # Completed pairs only. The UI can show a longer thread than the model sees.
@@ -274,13 +288,12 @@ def answer(
 ) -> tuple[str, list[RetrievedChunk]]:
     turns = normalize_history(history)
     query = _search_question(question, turns)
-    chunks, trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
+    chunks, _trace = retrieve_explained(query, top_k=top_k, scope=scope, hybrid=True)
     chunks = prompt_excerpts(chunks)
-    if not trace.get("trusted"):
-        note = empty_file_note(question, empty_indexed_rows())
+    if not chunks:
+        note = empty_file_note(question, _note_rows(scope))
         if note:
             return note, chunks
-    if not chunks:
         return NO_INFO, []
 
     prompt = build_prompt(question, chunks, turns)
@@ -334,13 +347,12 @@ def answer_stream(
             for i, c in enumerate(chunks)
         ],
     }
-    if not trace.get("trusted"):
-        note = empty_file_note(question, empty_indexed_rows())
+    if not chunks:
+        note = empty_file_note(question, _note_rows(scope))
         if note:
             yield {"type": "token", "text": note}
             yield {"type": "done", "question": question}
             return
-    if not chunks:
         yield {"type": "error", "message": NO_INFO}
         return
     if _cancelled(cancel):
