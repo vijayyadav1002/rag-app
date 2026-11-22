@@ -13,7 +13,9 @@ Two wire formats, not a catalog of SDKs:
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +121,41 @@ def load_settings() -> Settings:
         api_key=api_key,
         base_url=base_url,
     )
+
+
+def warn_model_mismatch() -> None:
+    """One stderr line when Ollama is up and does not serve LLM_MODEL.
+
+    Connection failures stay quiet. Startup must still bind.
+    """
+    try:
+        settings = load_settings()
+    except LLMConfigError:
+        return
+    if settings.provider != "ollama":
+        return
+    base = settings.base_url
+    if not isinstance(base, str) or not base.strip():
+        return
+    import urllib.request
+
+    url = base.rstrip("/") + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=1) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        ids: list[str] = []
+        data = payload.get("data") if isinstance(payload, dict) else None
+        for item in data or []:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                ids.append(item["id"])
+    except Exception:
+        return
+    if ids and settings.model not in ids:
+        print(
+            f"LLM_MODEL={settings.model!r} is not served by {settings.base_url}. "
+            f"Served: {', '.join(ids)}",
+            file=sys.stderr,
+        )
 
 
 def complete(system: str, user: str, max_tokens: int | None = None) -> str:

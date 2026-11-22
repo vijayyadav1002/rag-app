@@ -69,7 +69,7 @@ from media import (
     stage_media,
     upload_kind,
 )
-from llm import LLMConfigError
+from llm import LLMConfigError, warn_model_mismatch
 from review import (
     ConflictError,
     ReviewError,
@@ -131,13 +131,20 @@ async def lifespan(_app: FastAPI):
     await asyncio.to_thread(_load)
     # After the index is loaded. Startup does not close sockets.
     sweeper_task = asyncio.create_task(sweeper())
+    # Once the server can listen. A probe error must not stop the bind.
+    warn_task = asyncio.create_task(asyncio.to_thread(warn_model_mismatch))
     try:
         yield
     finally:
+        warn_task.cancel()
         sweeper_task.cancel()
         try:
             await sweeper_task
         except asyncio.CancelledError:
+            pass
+        try:
+            await warn_task
+        except (asyncio.CancelledError, Exception):
             pass
 
 

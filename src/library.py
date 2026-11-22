@@ -446,6 +446,19 @@ def _heading_text(line: str) -> str | None:
     return text
 
 
+_QUESTION_START = {
+    "what", "how", "when", "where", "who", "why",
+    "can", "does", "do", "is", "are", "should", "which",
+}
+
+
+def _is_question(text: str) -> bool:
+    if text.endswith("?"):
+        return True
+    first = text.split(" ", 1)[0].lower().strip(":")
+    return first in _QUESTION_START
+
+
 def heading_questions(
     scope: str | None = None,
     docs_dir: Path | None = None,
@@ -456,7 +469,8 @@ def heading_questions(
     Walking files in path order would fill the row from the first note.
     Round-robin keeps a later file visible. Backtick and star marks are
     not part of the question, and a very short line is not a heading
-    worth suggesting.
+    worth suggesting. A heading that does not read as a question is
+    skipped. An empty row is allowed.
     """
     docs_dir = docs_dir or DOCS_DIR
     queues: list[tuple[str, list[str]]] = []
@@ -470,7 +484,7 @@ def heading_questions(
         headings: list[str] = []
         for line in lines:
             question = _heading_text(line)
-            if question is None:
+            if question is None or not _is_question(question):
                 continue
             headings.append(question)
             if len(headings) >= 8:
