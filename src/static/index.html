@@ -839,6 +839,7 @@
           persist();
         }
         paintWrong(view);
+        if (view.wrong) postMiss(view);
       });
       view.wrongBtn = wrongBtn;
       tools.append(copy, wrongBtn);
@@ -849,6 +850,24 @@
         article.scrollIntoView({ block: "end" });
       }
       return view;
+    }
+
+    function postMiss(view) {
+      const sources = (view.chunks || []).slice(0, 8).map((chunk) => ({
+        source_file: chunk.source_file || "",
+        heading: chunk.heading || "",
+        rerank_score: typeof chunk.rerank_score === "number" ? chunk.rerank_score : null,
+      }));
+      fetch("/api/misses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: view.question || "",
+          answer: view.md || "",
+          query: view.query || "",
+          sources: sources,
+        }),
+      }).catch(() => {});
     }
 
     function paintWrong(view) {

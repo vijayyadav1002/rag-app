@@ -8,6 +8,8 @@ src/review/
 src/media_stage/
 src/sessions.json
 src/sessions.json.tmp
+src/misses.jsonl
+src/vault_questions.jsonl
 .superpowers/
 .cursor
 .worktrees/

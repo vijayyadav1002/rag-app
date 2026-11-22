@@ -14,12 +14,14 @@ stops; only a later question on a socket that is still registered clears it.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -85,6 +87,10 @@ from retrieve import _load, reload as reload_index
 ROOT = Path(__file__).parent
 INDEX_PATH = ROOT / "index" / "chunks.faiss"
 STATIC_DIR = ROOT / "static"
+MISSES_PATH = Path(__file__).resolve().parent / "misses.jsonl"
+_MISS_QUESTION_MAX = 400
+_MISS_ANSWER_MAX = 6000
+_MISS_SOURCES_MAX = 8
 # Shell exports take precedence (override=False). Missing file is a no-op.
 load_dotenv(ROOT / ".env")
 HOST = "127.0.0.1"
@@ -756,6 +762,50 @@ async def api_reindex(request: Request):
             except Exception:
                 pass
         _rebuilding = False
+
+
+@app.post("/api/misses", status_code=204)
+def api_misses(payload: dict) -> Response:
+    """Append one marked-wrong turn. Not a transcript of successful answers."""
+    if _rebuilding:
+        raise HTTPException(status_code=409, detail="Index is rebuilding. Try again when it finishes.")
+    question = payload.get("question")
+    answer = payload.get("answer")
+    if not isinstance(question, str) or not question.strip():
+        raise HTTPException(status_code=400, detail="Question is required.")
+    if not isinstance(answer, str):
+        raise HTTPException(status_code=400, detail="Answer is required.")
+    question = question.strip()
+    if len(question) > _MISS_QUESTION_MAX or len(answer) > _MISS_ANSWER_MAX:
+        raise HTTPException(status_code=400, detail="Miss is too long.")
+    raw_sources = payload.get("sources") or []
+    if not isinstance(raw_sources, list) or len(raw_sources) > _MISS_SOURCES_MAX:
+        raise HTTPException(status_code=400, detail="Too many sources.")
+    sources = []
+    for item in raw_sources:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("source_file")
+        if not isinstance(name, str) or not name:
+            continue
+        score = item.get("rerank_score")
+        sources.append({
+            "source_file": name,
+            "heading": item.get("heading") if isinstance(item.get("heading"), str) else "",
+            "rerank_score": float(score) if isinstance(score, (int, float)) else None,
+        })
+    query = payload.get("query")
+    row = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "question": question,
+        "query": query.strip() if isinstance(query, str) else "",
+        "answer": answer,
+        "sources": sources,
+    }
+    MISSES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with MISSES_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return Response(status_code=204)
 
 
 @app.get("/manifest.webmanifest")
