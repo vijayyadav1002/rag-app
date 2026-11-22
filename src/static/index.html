@@ -49,6 +49,7 @@
 
   <div class="workspace">
     <aside id="threads-aside">
+      <p class="side-label">Conversations</p>
       <input id="thread-filter" class="thread-filter" type="search" placeholder="Filter conversations" aria-label="Filter conversations" />
       <div id="current-thread"></div>
       <div id="thread-list"></div>
@@ -56,7 +57,10 @@
     <div class="ask-main">
       <div id="thread-scroll">
         <div class="thread-inner">
-          <p class="lede" id="empty-ask">Answers use only the mounted documents. A follow-up keeps this conversation. New chat starts another one.</p>
+          <div id="empty-ask" class="empty-ask">
+            <h1>Ask the library</h1>
+            <p>Answers use only the mounted documents. A follow-up stays in this conversation.</p>
+          </div>
           <div id="suggestions" hidden></div>
           <p id="vault-line" class="vault-line">Loading the library…</p>
           <p id="index-note" class="index-note" hidden></p>
@@ -66,6 +70,7 @@
       <form id="ask-form">
         <div class="composer">
           <textarea id="question" rows="2" autocomplete="off" aria-label="Question"
+                    aria-describedby="send-hint"
                     placeholder="How many PTO days do I get per year?"></textarea>
           <div class="ask-actions">
             <label class="scope-label" for="scope">Search in
@@ -73,12 +78,16 @@
                 <option value="">All documents</option>
               </select>
             </label>
-            <p id="status" class="idle">Ready</p>
-            <span id="conn">disconnected</span>
-            <span class="send-hint">Enter to send, Shift+Enter for a new line</span>
-            <button type="button" class="ghost" id="reconnect">Reconnect</button>
-            <button type="button" class="ghost" id="new-chat" disabled>New chat</button>
-            <button type="submit" id="ask">Ask</button>
+            <div class="ask-buttons">
+              <button type="button" class="ghost" id="new-chat" disabled>New chat</button>
+              <button type="submit" id="ask">Ask</button>
+            </div>
+            <div class="ask-meta">
+              <p id="status" class="idle">Ready</p>
+              <span id="conn">disconnected</span>
+              <span class="send-hint" id="send-hint">Enter to send, Shift+Enter for a new line</span>
+              <button type="button" class="ghost" id="reconnect">Reconnect</button>
+            </div>
           </div>
         </div>
       </form>
@@ -94,15 +103,13 @@
       </div>
       <form id="lock-form" method="post" action="/api/session">
         <div class="lock-label">
-          <label for="lock-password">Master passphrase</label>
-          <span class="req">Required</span>
+          <label for="lock-password">Password</label>
         </div>
         <div class="lock-field">
-          <input id="lock-password" type="password" autocomplete="current-password" aria-label="Password" />
+          <input id="lock-password" type="password" autocomplete="current-password" required aria-label="Password" />
           <button type="button" id="lock-reveal" aria-label="Show password">Show</button>
         </div>
-        <p class="lock-hint">Single master key unlocks the session.</p>
-        <button type="submit" id="unlock">Authenticate session</button>
+        <button type="submit" id="unlock">Unlock</button>
       </form>
       <button type="button" class="ghost" id="lock-reconnect" hidden>Reconnect</button>
       <p id="lock-status"></p>
@@ -145,6 +152,7 @@
         <button type="button" class="ghost" id="threads-close">Close</button>
       </header>
       <div id="thread-panel-mobile">
+        <p class="side-label">Conversations</p>
         <input id="thread-filter-mobile" class="thread-filter" type="search" placeholder="Filter conversations" aria-label="Filter conversations" />
         <div id="current-thread-mobile"></div>
         <div id="thread-list-mobile"></div>
@@ -647,7 +655,10 @@
 
     function syncThemeLabel() {
       const theme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
-      themeLabel.textContent = theme === "dark" ? "Light" : "Dark";
+      const next = theme === "dark" ? "light" : "dark";
+      themeLabel.textContent = next === "light" ? "Light" : "Dark";
+      themeToggle.title = "Switch to " + next + " theme";
+      themeToggle.setAttribute("aria-label", themeToggle.title);
       const meta = document.querySelector('meta[name="theme-color"]');
       if (meta) meta.content = theme === "dark" ? "#0c0e12" : "#f6f5f2";
     }
@@ -669,6 +680,8 @@
       const filled = threadEl.childElementCount > 0;
       emptyAsk.hidden = filled;
       suggestionsEl.hidden = filled || suggestionsEl.childElementCount === 0;
+      const askMain = document.querySelector(".ask-main");
+      if (askMain) askMain.classList.toggle("is-empty", !filled);
     }
 
     function syncComposer() {
@@ -1400,6 +1413,13 @@
       return parts.length > 1 ? parts[0] : "";
     }
 
+    function folderBrief(folders) {
+      if (!folders.length) return "";
+      const shown = folders.slice(0, 3).join(", ");
+      const extra = folders.length - 3;
+      return " · " + shown + (extra > 0 ? " · " + extra + " more" : "");
+    }
+
     function fillScope(folders) {
       const current = scopeEl.value;
       scopeEl.replaceChildren();
@@ -1493,7 +1513,7 @@
         vaultHasPto = files.some((doc) => doc.name === "pto_policy.md" || String(doc.name).endsWith("/pto_policy.md"));
         const folders = [...new Set(files.map((doc) => topFolder(doc.name)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
         const chunks = typeof body.num_chunks === "number" ? body.num_chunks + " chunks" : "index not built";
-        vaultLine.textContent = files.length + (files.length === 1 ? " file · " : " files · ") + chunks + (folders.length ? " · " + folders.join(", ") : "");
+        vaultLine.textContent = files.length + (files.length === 1 ? " file · " : " files · ") + chunks + folderBrief(folders);
         fillScope(folders);
         syncComposer();
         if (applyLaunchDraft()) loadSuggestions();
