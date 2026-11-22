@@ -275,6 +275,27 @@ def _empty_trace(source: str = "vector") -> dict:
     }
 
 
+def distinct_passages(chunks: list[RetrievedChunk], limit: int) -> list[RetrievedChunk]:
+    """First chunk for each file and heading, in the order already chosen.
+
+    Overlapping windows of one PDF page share a heading (`stem > Page N`).
+    Keeping every copy spends the top-k on one page. The first copy stays,
+    so the file at rank 1 stays. A later different heading can take the
+    freed slot. A chunk with no heading is its own key.
+    """
+    seen: set[tuple[str, str]] = set()
+    picked: list[RetrievedChunk] = []
+    for chunk in chunks:
+        key = (chunk.source_file, chunk.heading or chunk.chunk_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        picked.append(chunk)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
 def retrieve_explained(
     query: str,
     top_k: int = 4,
@@ -293,7 +314,7 @@ def retrieve_explained(
     vector_hits = vector_search(query, top_k=candidate_pool, scope=scope)
     lexical_hits = lexical_search(query, top_k=candidate_pool, scope=scope) if hybrid else []
     if not use_reranker:
-        chosen = vector_hits[:top_k]
+        chosen = distinct_passages(vector_hits, top_k)
         trace = _empty_trace("vector")
         trace["vector"] = _brief(vector_hits)
         trace["lexical"] = _brief(lexical_hits) if hybrid else []
@@ -318,7 +339,7 @@ def retrieve_explained(
         "rerank": _brief(ranked),
         "lexical": _brief(lexical_hits) if hybrid else [],
     }
-    return shipped[:top_k], trace
+    return distinct_passages(shipped, top_k), trace
 
 
 def retrieve(
