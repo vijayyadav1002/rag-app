@@ -1,12 +1,15 @@
 """
 Splits markdown docs into overlapping chunks for embedding.
 
-Strategy: split on markdown headings first (structure-aware), then merge
-small sections and split oversized ones by paragraph with a sliding-window
-overlap. Blind fixed-size chunking (splitting every N characters regardless
-of structure) is the naive baseline this avoids -- it routinely cuts a
-sentence or a Q/A pair in half, which is one of the most common causes of
-bad retrieval in real RAG systems.
+Strategy: split on markdown headings first (structure-aware). A body of
+CHUNK_SIZE characters or fewer stays one window. Short ## sections are
+not merged. A longer body ends on the last blank line in the second half
+of the window, else the last newline there, else a hard character cut.
+The next window starts at that end minus the overlap. Blind fixed-size
+chunking (splitting every N characters regardless of structure) is the
+naive baseline this avoids -- it routinely cuts a sentence or a Q/A pair
+in half, which is one of the most common causes of bad retrieval in real
+RAG systems.
 """
 
 import os
@@ -63,9 +66,7 @@ def _split_into_sections(text: str) -> list[tuple[str, str]]:
     return sections
 
 
-def _window_spans(text: str, size: int, overlap: int) -> list[tuple[int, int]]:
-    if len(text) <= size:
-        return [(0, len(text))]
+def _char_spans(text: str, size: int, overlap: int) -> list[tuple[int, int]]:
     spans = []
     start = 0
     while start < len(text):
@@ -74,6 +75,44 @@ def _window_spans(text: str, size: int, overlap: int) -> list[tuple[int, int]]:
         if end >= len(text):
             break
         start = end - overlap
+    return spans
+
+
+def _snap_end(text: str, start: int, hard: int) -> int:
+    """Last paragraph or line break in the second half of the window.
+
+    The index is exclusive, so the window includes that break.
+    """
+    window = text[start:hard]
+    floor = int(len(window) * 0.5)
+    blank = window.rfind("\n\n")
+    if blank >= floor:
+        return start + blank + 2
+    line = window.rfind("\n")
+    if line >= floor:
+        return start + line + 1
+    return hard
+
+
+def _window_spans(text: str, size: int, overlap: int) -> list[tuple[int, int]]:
+    if len(text) <= size:
+        return [(0, len(text))]
+    if "\n" not in text:
+        return _char_spans(text, size, overlap)
+    spans = []
+    start = 0
+    while start < len(text):
+        hard = min(start + size, len(text))
+        end = hard if hard >= len(text) else _snap_end(text, start, hard)
+        if end <= start:
+            end = hard
+        spans.append((start, end))
+        if end >= len(text):
+            break
+        nxt = end - overlap
+        if nxt <= start:
+            nxt = end
+        start = nxt
     return spans
 
 
