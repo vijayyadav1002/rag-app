@@ -2,15 +2,18 @@
 
 Writing a sibling markdown file on Re-index would let search cite text the
 open file no longer contains, and it would write the notes folder. PDF text
-comes from the text layer. Image text comes from a local OCR pass on a
-downscaled copy. Both become ordinary chunks. The original file stays what
-a citation opens. A photo with no words adds no chunks. The chat model is
-not asked to look at the picture.
+comes from the text layer, and from local OCR of embedded images when that
+layer is empty. A page that already has text is not OCR'd. Image text comes
+from the same OCR pass on a downscaled copy. Both become ordinary chunks.
+The original file stays what a citation opens. A photo with no words, or a
+page with no text and no readable embedded image, adds no chunks. The chat
+model is not asked to look at the picture.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import shutil
 import threading
@@ -35,6 +38,7 @@ MAX_PDF_PAGES = 100
 OCR_MAX_EDGE = 2048
 FILE_SCOPE_SUFFIXES = (".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp")
 PAGE_CAP_WARNING = "Only the first 100 pages were indexed."
+NO_TEXT_WARNING = "No text extracted."
 STAGE_DIR = Path(__file__).resolve().parent / "media_stage"
 _ocr = None
 _ocr_lock = threading.Lock()
@@ -82,7 +86,8 @@ class Corpus:
     """Chunks a build may embed, and the files list it must publish.
 
     `files` includes every PDF and image on disk, even when the text is empty.
-    `warnings` is only the page cap. It is not retrieved.
+    `warnings` may be the page cap, the no-text sentence, or both. It is not
+    retrieved.
     """
 
     chunks: tuple
@@ -261,25 +266,84 @@ def _extract_pdf_pages(path: Path, source_file: str) -> tuple[list[_PdfPage], bo
     return pages, truncated
 
 
+def _embedded_image_text(page, source_file: str) -> str:
+    """OCR image XObjects on one page. A bad image is skipped."""
+    try:
+        images = list(page.images)
+    except Exception:
+        return ""
+    parts: list[str] = []
+    for image in images:
+        data = getattr(image, "data", None)
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            continue
+        try:
+            text = _ocr_image_bytes(bytes(data), source_file)
+        except ImageExtractError:
+            continue
+        if text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts)
+
+
+def _ocr_empty_pages(path: Path, source_file: str, numbers: set[int]) -> dict[int, str]:
+    """Best-effort OCR for page numbers that had no text layer.
+
+    A reader failure here is PdfExtractError, same as the text pass.
+    A single image failure is an empty string for that page.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise MediaPathError("pypdf is not installed.") from exc
+    try:
+        reader = PdfReader(str(path))
+    except Exception as exc:
+        raise PdfExtractError(f"Could not read {source_file}.") from exc
+    found: dict[int, str] = {}
+    for number in sorted(numbers):
+        if number < 1 or number > len(reader.pages):
+            continue
+        try:
+            found[number] = _embedded_image_text(reader.pages[number - 1], source_file)
+        except PdfExtractError:
+            raise
+        except Exception:
+            found[number] = ""
+    return found
+
+
 def _pdf_chunks(path: Path, source_file: str) -> tuple[list, str | None]:
     pages, truncated = _extract_pdf_pages(path, source_file)
+    # Second pass only for pages the text layer left empty. page.images
+    # needs the reader, so extract those page objects here.
+    empty_numbers = [page.number for page in pages if not page.text.strip()]
+    ocr_text: dict[int, str] = {}
+    if empty_numbers:
+        ocr_text = _ocr_empty_pages(path, source_file, set(empty_numbers))
     stem = Path(source_file).stem
     id_stem = Path(source_file).with_suffix("").as_posix().replace("/", "_")
     chunks = []
     for page in pages:
-        if not page.text.strip():
+        text = page.text if page.text.strip() else ocr_text.get(page.number, "")
+        if not text.strip():
             continue
         heading = f"{stem} > Page {page.number}"
         chunks.extend(
             windowed_chunks(
-                page.text,
+                text,
                 source_file=source_file,
                 heading=heading,
                 id_stem=id_stem,
                 section_index=page.number,
             )
         )
-    warning = PAGE_CAP_WARNING if truncated else None
+    messages = []
+    if not chunks:
+        messages.append(NO_TEXT_WARNING)
+    if truncated:
+        messages.append(PAGE_CAP_WARNING)
+    warning = " ".join(messages) or None
     return chunks, warning
 
 
@@ -298,29 +362,78 @@ def _ocr_engine():
     return _ocr
 
 
-def _prepare_image(path: Path, source_file: str):
+def _prepare_pil(im, source_file: str):
     """First frame, on white, longest side at most OCR_MAX_EDGE.
 
     A transparent PNG composites onto white. Converting straight to RGB
     paints that text onto black, and the recognizer then sees nothing.
     """
     try:
+        from PIL import Image
+    except ImportError as exc:
+        raise MediaPathError("Pillow is not installed.") from exc
+    try:
+        im.seek(0)
+        if im.format == "JPEG" and max(im.size) > OCR_MAX_EDGE:
+            im.draft("RGB", (OCR_MAX_EDGE, OCR_MAX_EDGE))
+        if max(im.size) > OCR_MAX_EDGE:
+            im.thumbnail((OCR_MAX_EDGE, OCR_MAX_EDGE))
+        rgba = im.convert("RGBA")
+        canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+        canvas.paste(rgba, mask=rgba.getchannel("A"))
+        return canvas
+    except (OSError, ValueError) as exc:
+        raise ImageExtractError(f"Could not read {source_file}.") from exc
+
+
+def _prepare_image(path: Path, source_file: str):
+    """Open one image file and hand it to the shared Pillow prep."""
+    try:
         from PIL import Image, UnidentifiedImageError
     except ImportError as exc:
         raise MediaPathError("Pillow is not installed.") from exc
     try:
         with Image.open(path) as im:
-            im.seek(0)
-            if im.format == "JPEG" and max(im.size) > OCR_MAX_EDGE:
-                im.draft("RGB", (OCR_MAX_EDGE, OCR_MAX_EDGE))
-            if max(im.size) > OCR_MAX_EDGE:
-                im.thumbnail((OCR_MAX_EDGE, OCR_MAX_EDGE))
-            rgba = im.convert("RGBA")
-            canvas = Image.new("RGB", rgba.size, (255, 255, 255))
-            canvas.paste(rgba, mask=rgba.getchannel("A"))
-            return canvas
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+            return _prepare_pil(im, source_file)
+    except ImageExtractError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise ImageExtractError(f"Could not read {source_file}.") from exc
+
+
+def _recognize(canvas, source_file: str) -> str:
+    """RapidOCR one RGB canvas. Empty recognition is an empty string."""
+    try:
+        import numpy as np
+
+        result, _elapse = _ocr_engine()(np.asarray(canvas))
+    except (ImageExtractError, MediaPathError):
+        raise
+    except Exception as exc:
+        raise ImageExtractError(f"Could not read {source_file}.") from exc
+    return "\n".join(_ocr_lines(result))
+
+
+def _ocr_image_bytes(data: bytes, source_file: str) -> str:
+    """OCR one encoded image. Empty recognition is an empty string.
+
+    A decode failure raises ImageExtractError. Callers that own one page
+    catch that and skip the page.
+    """
+    if len(data) > MAX_MEDIA_BYTES:
+        return ""
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError as exc:
+        raise MediaPathError("Pillow is not installed.") from exc
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            canvas = _prepare_pil(im, source_file)
+    except ImageExtractError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ImageExtractError(f"Could not read {source_file}.") from exc
+    return _recognize(canvas, source_file)
 
 
 def _ocr_lines(result) -> list[str]:
@@ -340,25 +453,18 @@ def _ocr_lines(result) -> list[str]:
 
 
 def _image_text(path: Path, source_file: str) -> str:
-    image = _prepare_image(path, source_file)
-    try:
-        import numpy as np
-
-        result, _elapse = _ocr_engine()(np.asarray(image))
-    except ImageExtractError:
-        raise
-    except MediaPathError:
-        raise
-    except Exception as exc:
-        raise ImageExtractError(f"Could not read {source_file}.") from exc
-    return "\n".join(_ocr_lines(result))
+    """OCR one image file. Empty recognition is an empty string."""
+    return _recognize(_prepare_image(path, source_file), source_file)
 
 
 def _image_chunks(path: Path, source_file: str) -> tuple[list, str | None]:
-    """OCR one image into the same windows a PDF page uses. No page warning."""
+    """OCR one image into the same windows a PDF page uses.
+
+    An empty result is the no-text warning, not the page cap.
+    """
     text = _image_text(path, source_file)
     if not text.strip():
-        return [], None
+        return [], NO_TEXT_WARNING
     stem = Path(source_file).stem
     id_stem = Path(source_file).with_suffix("").as_posix().replace("/", "_")
     heading = f"{stem} > Image"
