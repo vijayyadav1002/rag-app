@@ -290,7 +290,9 @@ def _ocr_empty_pages(path: Path, source_file: str, numbers: set[int]) -> dict[in
     """Best-effort OCR for page numbers that had no text layer.
 
     A reader failure here is PdfExtractError, same as the text pass.
-    A single image failure is an empty string for that page.
+    A missing OCR dependency is MediaPathError and fails the file, so a
+    rebuild does not replace the last good index. A single image failure
+    is an empty string for that page.
     """
     try:
         from pypdf import PdfReader
@@ -307,6 +309,8 @@ def _ocr_empty_pages(path: Path, source_file: str, numbers: set[int]) -> dict[in
         try:
             found[number] = _embedded_image_text(reader.pages[number - 1], source_file)
         except PdfExtractError:
+            raise
+        except MediaPathError:
             raise
         except Exception:
             found[number] = ""
