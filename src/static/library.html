@@ -50,7 +50,7 @@
     <section class="archive-head">
       <p class="archive-kicker">Internal knowledge archive</p>
       <h1>Document index</h1>
-      <p class="deck">Markdown, PDF, and images in the mounted corpus. Search changes only after Approve, then Re-index.</p>
+      <p class="deck">Markdown, PDF, and images. Search updates after Approve, then Re-index.</p>
       <div class="archive-tools">
         <span class="stat"><strong id="file-count">0</strong> files</span>
         <span class="stat"><strong id="chunk-count">—</strong> chunks</span>
@@ -80,9 +80,14 @@
     </section>
 
     <section class="panel" id="library">
-      <search class="lib-toolbar">
-        <input id="doc-filter" type="search" placeholder="Filter documents by path" aria-label="Filter documents by path" />
-        <input id="phrase-search" type="search" placeholder="Find a phrase" aria-label="Find a phrase in the documents" />
+      <h2>Documents</h2>
+      <search class="lib-toolbar" aria-label="Find documents">
+        <label class="tool-field">Filter by name
+          <input id="doc-filter" type="search" placeholder="name or path" />
+        </label>
+        <label class="tool-field">Find a phrase
+          <input id="phrase-search" type="search" placeholder="exact words in a file" />
+        </label>
         <div id="phrase-hits"></div>
         <div class="pills" id="folder-pills"></div>
       </search>
@@ -94,7 +99,7 @@
       <h2>Add files</h2>
       <div class="drop-zone" id="drop-zone">
         <p>Drop Markdown, PDF, or images here, or <button type="button" id="browse-files">browse</button></p>
-        <p class="fine">MARKDOWN 1 MB · IMAGES AND PDF 50 MB · UP TO 20 FILES</p>
+        <p class="fine">Markdown up to 1 MB. Images and PDF up to 50 MB. Up to 20 files.</p>
       </div>
       <form id="new-note-form" class="new-note">
         <label>Folder
@@ -118,15 +123,13 @@
       </div>
       <form id="lock-form" method="post" action="/api/session">
         <div class="lock-label">
-          <label for="lock-password">Master passphrase</label>
-          <span class="req">Required</span>
+          <label for="lock-password">Password</label>
         </div>
         <div class="lock-field">
-          <input id="lock-password" type="password" autocomplete="current-password" aria-label="Password" />
+          <input id="lock-password" type="password" autocomplete="current-password" required aria-label="Password" />
           <button type="button" id="lock-reveal" aria-label="Show password">Show</button>
         </div>
-        <p class="lock-hint">Single master key unlocks the session.</p>
-        <button type="submit" id="unlock">Authenticate session</button>
+        <button type="submit" id="unlock">Unlock</button>
       </form>
       <button type="button" class="ghost" id="lock-reconnect" hidden>Reconnect</button>
       <p id="lock-status"></p>
@@ -321,7 +324,10 @@
 
     function syncThemeLabel() {
       const theme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
-      themeLabel.textContent = theme === "dark" ? "Light" : "Dark";
+      const next = theme === "dark" ? "light" : "dark";
+      themeLabel.textContent = next === "light" ? "Light" : "Dark";
+      themeToggle.title = "Switch to " + next + " theme";
+      themeToggle.setAttribute("aria-label", themeToggle.title);
       const meta = document.querySelector('meta[name="theme-color"]');
       if (meta) meta.content = theme === "dark" ? "#0c0e12" : "#f6f5f2";
     }
@@ -415,9 +421,11 @@
           row.className = "doc-row";
           row.dataset.name = doc.name;
           const main = document.createElement("div");
-          const title = document.createElement("p");
+          const title = document.createElement("button");
+          title.type = "button";
           title.className = "doc-name";
           title.textContent = doc.name;
+          title.addEventListener("click", () => openPreview(doc.name));
           const meta = document.createElement("p");
           meta.className = "doc-meta";
           const bits = [];
@@ -477,11 +485,31 @@
           fileReindex.disabled = rebuilding;
           fileReindex.addEventListener("click", () => reindexOne(doc.name));
           const kind = docKind(doc);
-          actions.append(view, ask, fileReindex);
+          const more = document.createElement("details");
+          more.className = "row-more";
+          const summary = document.createElement("summary");
+          summary.textContent = "More";
+          summary.setAttribute("aria-label", "More actions for " + doc.name);
+          const menu = document.createElement("div");
+          menu.className = "row-menu";
+          menu.append(fileReindex);
           if (doc.state !== "missing_on_disk") {
-            if (kind === "note") actions.append(edit, move);
-            actions.append(del);
+            if (kind === "note") menu.append(edit, move);
+            menu.append(del);
           }
+          more.append(summary, menu);
+          more.addEventListener("toggle", () => {
+            if (!more.open) {
+              more.classList.remove("drop-up");
+              return;
+            }
+            docList.querySelectorAll("details.row-more[open]").forEach((node) => {
+              if (node !== more) node.open = false;
+            });
+            const spaceBelow = window.innerHeight - more.getBoundingClientRect().bottom;
+            more.classList.toggle("drop-up", spaceBelow < 200);
+          });
+          actions.append(view, ask, more);
           row.append(main, actions);
           docList.append(row);
         }
@@ -846,6 +874,8 @@
       reviewGen += 1;
       proposals = items || [];
       reviewList.replaceChildren();
+      const reviewPanel = document.getElementById("review-panel");
+      if (reviewPanel) reviewPanel.classList.toggle("is-quiet", !proposals.length && !unreadable);
       if (unreadable) {
         reviewStatus.textContent = "One record could not be read.";
         reviewStatus.className = "err";
@@ -1552,6 +1582,10 @@
       } catch (err) {
         showLock(OFFLINE_MSG);
       }
+    });
+    document.addEventListener("click", (event) => {
+      if (event.target.closest("details.row-more")) return;
+      docList.querySelectorAll("details.row-more[open]").forEach((node) => { node.open = false; });
     });
 
     syncThemeLabel();
